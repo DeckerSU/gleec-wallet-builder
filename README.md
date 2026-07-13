@@ -29,7 +29,9 @@ Manually triggered (`workflow_dispatch`), **repo owner only** (enforced via
 5. `flutter build <platform> --no-pub --release` with `--dart-define`s taken
    from repository secrets (plus `COMMIT_HASH` and `BUILD_DATE`).
 6. Packages the bundles as `gleec_wallet_linux_<id>.tar.gz` and
-   `gleec_wallet_windows_<id>.zip`, where `<id>` is the sanitized `ref`.
+   `gleec_wallet_windows_<id>.zip`, where `<id>` is the sanitized tag name
+   if `ref` is a tag, or the 7-char commit SHA if `ref` is a branch or
+   commit.
 7. On success of **both** platforms, creates a GitHub release in this repo
    tagged `debug_<id>` or `release_<id>` (debug builds are marked
    *pre-release*) and attaches the archives.

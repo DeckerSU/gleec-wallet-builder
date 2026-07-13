@@ -39,6 +39,7 @@ jobs:
     outputs:
       commit_sha: ${{ steps.vars.outputs.commit_sha }}
       short_sha: ${{ steps.vars.outputs.short_sha }}
+      safe_id: ${{ steps.vars.outputs.safe_id }}
     strategy:
       fail-fast: false
       matrix:
@@ -85,8 +86,13 @@ jobs:
         run: |
           COMMIT_SHA=$(git rev-parse HEAD)
           SHORT_SHA=$(git rev-parse --short=7 HEAD)
-          # Sanitize the user-supplied ref for use in tag / file names
-          SAFE_ID=$(echo '${{ inputs.ref }}' | sed 's#[/\\:*?"<>|~^[:space:]]#-#g')
+          # Tag/file-name id: for a tag ref use the (sanitized) tag name,
+          # for a branch or commit ref use the 7-char commit SHA.
+          if git rev-parse -q --verify 'refs/tags/${{ inputs.ref }}' >/dev/null; then
+            SAFE_ID=$(echo '${{ inputs.ref }}' | sed 's#[/\\:*?"<>|~^[:space:]]#-#g')
+          else
+            SAFE_ID=$SHORT_SHA
+          fi
           echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA"   >> "$GITHUB_OUTPUT"
           echo "safe_id=$SAFE_ID"       >> "$GITHUB_OUTPUT"
@@ -211,14 +217,6 @@ jobs:
     if: github.actor == github.repository_owner
     runs-on: ubuntu-latest
     steps:
-      - name: Compute release tag
-        id: tag
-        shell: bash
-        run: |
-          SAFE_ID=$(echo '${{ inputs.ref }}' | sed 's#[/\\:*?"<>|~^[:space:]]#-#g')
-          echo "safe_id=$SAFE_ID" >> "$GITHUB_OUTPUT"
-          echo "tag=${{ inputs.build_type }}_$SAFE_ID" >> "$GITHUB_OUTPUT"
-
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -228,7 +226,7 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ inputs.build_type }}_${{ needs.build_desktop.outputs.safe_id }}
           name: "Gleec Wallet ${{ inputs.build_type }} ${{ inputs.ref }}"
           prerelease: ${{ inputs.build_type == 'debug' }}
           make_latest: ${{ inputs.build_type == 'release' }}
