@@ -19,16 +19,18 @@ Manually triggered (`workflow_dispatch`), **repo owner only** (enforced via
 
 1. Clones `GLEECBTC/gleec-wallet` (full history, recursive submodules) and
    checks out the requested `ref`.
-2. Installs Flutter 3.41.4 + platform toolchains (GTK/ninja/clang on Linux,
+2. Applies the Firebase production config patch from the `FIREBASE_PATCH`
+   secret (`git apply -v`).
+3. Installs Flutter 3.41.4 + platform toolchains (GTK/ninja/clang on Linux,
    MSBuild + Windows SDK 26100 on `windows-2022`).
-3. `flutter pub get --enforce-lockfile`, then `flutter build web --no-pub`
+4. `flutter pub get --enforce-lockfile`, then `flutter build web --no-pub`
    first — required so the build transformer downloads and registers coin
    icons, config files, and KDF assets.
-4. `flutter build <platform> --no-pub --release` with `--dart-define`s taken
+5. `flutter build <platform> --no-pub --release` with `--dart-define`s taken
    from repository secrets (plus `COMMIT_HASH` and `BUILD_DATE`).
-5. Packages the bundles as `gleec_wallet_linux_<id>.tar.gz` and
+6. Packages the bundles as `gleec_wallet_linux_<id>.tar.gz` and
    `gleec_wallet_windows_<id>.zip`, where `<id>` is the sanitized `ref`.
-6. On success of **both** platforms, creates a GitHub release in this repo
+7. On success of **both** platforms, creates a GitHub release in this repo
    tagged `debug_<id>` or `release_<id>` (debug builds are marked
    *pre-release*) and attaches the archives.
 
@@ -36,6 +38,7 @@ Manually triggered (`workflow_dispatch`), **repo owner only** (enforced via
 
 | Secret | Purpose |
 |---|---|
+| `FIREBASE_PATCH` | Firebase production config patch, applied via `git apply` after checkout |
 | `FEEDBACK_API_KEY` | Cloudflare feedback service API key |
 | `FEEDBACK_PRODUCTION_URL` | Cloudflare feedback service URL |
 | `TRELLO_BOARD_ID` | Trello board ID for the feedback service |

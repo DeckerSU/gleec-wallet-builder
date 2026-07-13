@@ -66,6 +66,19 @@ jobs:
           fetch-depth: 0
           submodules: recursive
 
+      - name: Apply Firebase production config patch
+        shell: bash
+        env:
+          FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
+        run: |
+          if [ -z "$FIREBASE_PATCH" ]; then
+            echo "::error::FIREBASE_PATCH secret is not set"
+            exit 1
+          fi
+          printf '%s\n' "$FIREBASE_PATCH" > "$RUNNER_TEMP/firebase.patch"
+          git apply -v "$RUNNER_TEMP/firebase.patch"
+          rm -f "$RUNNER_TEMP/firebase.patch"
+
       - name: Compute build identifiers
         id: vars
         shell: bash
