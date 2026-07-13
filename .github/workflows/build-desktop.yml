@@ -129,11 +129,18 @@ jobs:
 
       # A web build is required first so that the build transformer runs and
       # downloads/registers coin icons, config files, and the KDF assets.
-      - name: Generate assets (flutter build web)
+      # Best-effort: the transformer fails late on non-essential steps (e.g.
+      # no macos KDF zip in the GLEECBTC/komodo-defi-framework releases)
+      # after the desktop assets have already been fetched, so a failure
+      # here must not stop the desktop build.
+      - name: Generate assets (flutter build web, best-effort)
         shell: bash
         env:
           GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
-        run: flutter build web --no-pub -v
+        run: |
+          if ! flutter build web --no-pub -v; then
+            echo "::warning::flutter build web failed — ignoring, assets are expected to be fetched already"
+          fi
 
       - name: Build ${{ matrix.platform }} (release)
         shell: bash
