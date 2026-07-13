@@ -1,0 +1,225 @@
+name: Build Gleec Wallet Desktop
+
+run-name: "Build ${{ inputs.build_type }} @ ${{ inputs.ref }} 🖥️ (by @${{ github.actor }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
+        required: true
+        default: "main"
+      build_type:
+        description: "Build type (affects Matomo site ID and release tag prefix)"
+        required: true
+        type: choice
+        options:
+          - debug
+          - release
+        default: "debug"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ inputs.build_type }}-${{ inputs.ref }}
+  cancel-in-progress: false
+
+env:
+  WALLET_REPO: GLEECBTC/gleec-wallet
+  FLUTTER_VERSION: "3.41.4"
+
+jobs:
+  build_desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    # Only the repository owner is allowed to run this workflow
+    if: github.actor == github.repository_owner
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    outputs:
+      commit_sha: ${{ steps.vars.outputs.commit_sha }}
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: ubuntu-latest
+            bundle_path: build/linux/x64/release/bundle
+          - platform: windows
+            # Pinned to windows-2022 (VS 2022 / CMake 3.x / MSVC 14.4x). The
+            # windows-latest image moved to VS 2026 (CMake 4.x, MSVC 14.51),
+            # which breaks the build: the bundled Firebase C++ SDK requires
+            # cmake_minimum_required < 3.5, and <experimental/coroutine> became
+            # a hard error. Revert to windows-latest once the firebase_* and
+            # local_auth_windows / flutter_inappwebview_windows plugins are
+            # upgraded to versions compatible with the VS 2026 toolchain.
+            runner: windows-2022
+            bundle_path: build/windows/x64/runner/Release
+
+    steps:
+      - name: Checkout gleec-wallet (${{ inputs.ref }})
+        uses: actions/checkout@v4
+        with:
+          repository: GLEECBTC/gleec-wallet
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Compute build identifiers
+        id: vars
+        shell: bash
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          # Sanitize the user-supplied ref for use in tag / file names
+          SAFE_ID=$(echo '${{ inputs.ref }}' | sed 's#[/\\:*?"<>|~^[:space:]]#-#g')
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA"   >> "$GITHUB_OUTPUT"
+          echo "safe_id=$SAFE_ID"       >> "$GITHUB_OUTPUT"
+          echo "Building $COMMIT_SHA (ref: ${{ inputs.ref }}, id: $SAFE_ID)"
+
+      - name: Install Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: "stable"
+          cache: true
+
+      # ---------- Linux setup ----------
+      - name: Setup Linux environment
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgtk-3-dev libblkid-dev \
+            liblzma-dev libsecret-1-dev libjsoncpp-dev libsqlite3-dev \
+            libxdg-basedir-dev cmake pkg-config clang git xz-utils zip \
+            libglu1-mesa curl libstdc++-12-dev
+
+      # ---------- Windows setup ----------
+      - name: Setup MSBuild
+        if: matrix.platform == 'windows'
+        uses: microsoft/setup-msbuild@v1.3
+
+      - name: Install Windows SDK
+        if: matrix.platform == 'windows'
+        uses: GuillaumeFalourd/setup-windows10-sdk-action@v2
+        with:
+          sdk-version: 26100
+
+      - name: Fetch packages
+        shell: bash
+        run: |
+          flutter pub get --enforce-lockfile
+          flutter doctor
+
+      # A web build is required first so that the build transformer runs and
+      # downloads/registers coin icons, config files, and the KDF assets.
+      - name: Generate assets (flutter build web)
+        shell: bash
+        env:
+          GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
+        run: flutter build web --no-pub -v
+
+      - name: Build ${{ matrix.platform }} (release)
+        shell: bash
+        env:
+          GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
+          FEEDBACK_API_KEY: ${{ secrets.FEEDBACK_API_KEY }}
+          FEEDBACK_PRODUCTION_URL: ${{ secrets.FEEDBACK_PRODUCTION_URL }}
+          TRELLO_BOARD_ID: ${{ secrets.TRELLO_BOARD_ID }}
+          TRELLO_LIST_ID: ${{ secrets.TRELLO_LIST_ID }}
+          MATOMO_URL: ${{ secrets.MATOMO_URL }}
+          MATOMO_SITE_ID: ${{ inputs.build_type == 'release' && (secrets.MATOMO_SITE_ID_RELEASE || '2') || (secrets.MATOMO_SITE_ID_DEBUG || '3') }}
+        run: |
+          ARGS=(
+            --dart-define=COMMIT_HASH=${{ steps.vars.outputs.short_sha }}
+            --dart-define=BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%MZ')
+          )
+
+          if [ -n "$FEEDBACK_API_KEY" ] && [ -n "$FEEDBACK_PRODUCTION_URL" ]; then
+            ARGS+=(--dart-define=FEEDBACK_API_KEY=$FEEDBACK_API_KEY)
+            ARGS+=(--dart-define=FEEDBACK_PRODUCTION_URL=$FEEDBACK_PRODUCTION_URL)
+          else
+            echo "::warning::FEEDBACK_API_KEY / FEEDBACK_PRODUCTION_URL secrets not set; feedback service disabled in this build"
+          fi
+
+          if [ -n "$TRELLO_BOARD_ID" ] && [ -n "$TRELLO_LIST_ID" ]; then
+            ARGS+=(--dart-define=TRELLO_BOARD_ID=$TRELLO_BOARD_ID)
+            ARGS+=(--dart-define=TRELLO_LIST_ID=$TRELLO_LIST_ID)
+          else
+            echo "::warning::TRELLO_BOARD_ID / TRELLO_LIST_ID secrets not set"
+          fi
+
+          if [ -n "$MATOMO_URL" ]; then
+            ARGS+=(--dart-define=MATOMO_URL=$MATOMO_URL)
+            ARGS+=(--dart-define=MATOMO_SITE_ID=$MATOMO_SITE_ID)
+          else
+            echo "::warning::MATOMO_URL secret not set; analytics disabled in this build"
+            ARGS+=(--dart-define=ANALYTICS_DISABLED=true)
+          fi
+
+          flutter build ${{ matrix.platform }} --no-pub --release -v "${ARGS[@]}"
+
+      # ---------- Packaging ----------
+      - name: Package (linux, tar.gz)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          tar -C '${{ matrix.bundle_path }}' -czf \
+            'gleec_wallet_linux_${{ steps.vars.outputs.safe_id }}.tar.gz' .
+
+      - name: Package (windows, zip)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path '${{ matrix.bundle_path }}\*' `
+            -DestinationPath "gleec_wallet_windows_${{ steps.vars.outputs.safe_id }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gleec_wallet_${{ matrix.platform }}_${{ steps.vars.outputs.safe_id }}
+          path: gleec_wallet_${{ matrix.platform }}_${{ steps.vars.outputs.safe_id }}.*
+          retention-days: 5
+          if-no-files-found: error
+
+  create_release:
+    name: Create Release
+    needs: build_desktop
+    if: github.actor == github.repository_owner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute release tag
+        id: tag
+        shell: bash
+        run: |
+          SAFE_ID=$(echo '${{ inputs.ref }}' | sed 's#[/\\:*?"<>|~^[:space:]]#-#g')
+          echo "safe_id=$SAFE_ID" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ inputs.build_type }}_$SAFE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "Gleec Wallet ${{ inputs.build_type }} ${{ inputs.ref }}"
+          prerelease: ${{ inputs.build_type == 'debug' }}
+          make_latest: ${{ inputs.build_type == 'release' }}
+          files: dist/*
+          body: |
+            Automated ${{ inputs.build_type }} build of [`${{ inputs.ref }}`](https://github.com/GLEECBTC/gleec-wallet/tree/${{ needs.build_desktop.outputs.commit_sha }})
+
+            | | |
+            |---|---|
+            | Source repo | `GLEECBTC/gleec-wallet` |
+            | Ref | `${{ inputs.ref }}` |
+            | Commit | `${{ needs.build_desktop.outputs.commit_sha }}` |
+            | Build type | `${{ inputs.build_type }}` |
+            | Triggered by | @${{ github.actor }} |
