@@ -224,20 +224,38 @@ jobs:
           merge-multiple: true
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ inputs.build_type }}_${{ needs.build_desktop.outputs.safe_id }}
-          name: "Gleec Wallet ${{ inputs.build_type }} ${{ inputs.ref }}"
-          prerelease: ${{ inputs.build_type == 'debug' }}
-          make_latest: ${{ inputs.build_type == 'release' }}
-          files: dist/*
-          body: |
-            Automated ${{ inputs.build_type }} build of [`${{ inputs.ref }}`](https://github.com/GLEECBTC/gleec-wallet/tree/${{ needs.build_desktop.outputs.commit_sha }})
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.build_type }}_${{ needs.build_desktop.outputs.safe_id }}
+          TITLE: "Gleec Wallet ${{ inputs.build_type }} ${{ inputs.ref }}"
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<'EOF'
+          Automated ${{ inputs.build_type }} build of [`${{ inputs.ref }}`](https://github.com/GLEECBTC/gleec-wallet/tree/${{ needs.build_desktop.outputs.commit_sha }})
 
-            | | |
-            |---|---|
-            | Source repo | `GLEECBTC/gleec-wallet` |
-            | Ref | `${{ inputs.ref }}` |
-            | Commit | `${{ needs.build_desktop.outputs.commit_sha }}` |
-            | Build type | `${{ inputs.build_type }}` |
-            | Triggered by | @${{ github.actor }} |
+          | | |
+          |---|---|
+          | Source repo | `GLEECBTC/gleec-wallet` |
+          | Ref | `${{ inputs.ref }}` |
+          | Commit | `${{ needs.build_desktop.outputs.commit_sha }}` |
+          | Build type | `${{ inputs.build_type }}` |
+          | Triggered by | @${{ github.actor }} |
+          EOF
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; replacing assets"
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            EXTRA_ARGS=()
+            if [ '${{ inputs.build_type }}' = 'debug' ]; then
+              EXTRA_ARGS+=(--prerelease)
+            else
+              EXTRA_ARGS+=(--latest)
+            fi
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$TITLE" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              "${EXTRA_ARGS[@]}"
+          fi
