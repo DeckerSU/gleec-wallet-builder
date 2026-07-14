@@ -242,9 +242,19 @@ jobs:
           | Triggered by | @${{ github.actor }} |
           EOF
 
+          (cd dist && sha256sum -- *) | tee "$RUNNER_TEMP/SHA256SUMS"
+          {
+            echo ""
+            echo "### SHA256 checksums"
+            echo '```'
+            cat "$RUNNER_TEMP/SHA256SUMS"
+            echo '```'
+          } >> "$RUNNER_TEMP/notes.md"
+
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; replacing assets"
+            echo "Release $TAG already exists; replacing assets and notes"
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md" --repo "$GITHUB_REPOSITORY"
           else
             EXTRA_ARGS=()
             if [ '${{ inputs.build_type }}' = 'debug' ]; then
