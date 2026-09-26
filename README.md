@@ -24,6 +24,8 @@ Available `stage` inputs:
   arm64 support. Dependency version/source changes fail the run; checksum-only
   changes for local Flutter plugin podspecs are recorded and allowed after Dart
   packages have passed `pub get --enforce-lockfile`.
+  The web build retries once for the transformer's explicit "Coin assets were
+  updated" signal; all other failures stop preparation.
 
 Environment setup uses shell commands, without third-party setup actions.
 Flutter is downloaded directly from Google's official Flutter release archive.

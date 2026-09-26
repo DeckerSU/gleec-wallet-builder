@@ -339,7 +339,24 @@ jobs:
         working-directory: ${{ env.WALLET_DIR }}
         env:
           GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
-        run: flutter build web --no-pub
+        run: |
+          WEB_LOG=$(mktemp "$RUNNER_TEMP/gleec-web.XXXXXXXX")
+          trap 'rm -f "$WEB_LOG"' EXIT
+          set +e
+          flutter build web --no-pub 2>&1 | tee "$WEB_LOG"
+          RESULTS=("${PIPESTATUS[@]}")
+          set -e
+          test "${RESULTS[1]}" -eq 0
+          if [ "${RESULTS[0]}" -ne 0 ]; then
+            if grep -Fq 'What: Coin assets were updated.' "$WEB_LOG" &&
+               grep -Fq 'Transformer package: komodo_wallet_build_transformer' "$WEB_LOG"; then
+              echo 'Transformer updated coin assets; running the required second web build.'
+              echo 'Web asset generation required one retry after the transformer updated coin assets.' >> "$GITHUB_STEP_SUMMARY"
+              flutter build web --no-pub
+            else
+              exit "${RESULTS[0]}"
+            fi
+          fi
 
       - name: Verify macOS KDF and generated assets
         if: inputs.stage == 'prepare'
