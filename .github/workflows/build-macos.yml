@@ -13,6 +13,7 @@ on:
           - diagnostics
           - toolchain
           - source
+          - prepare
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -44,7 +45,7 @@ jobs:
       github.triggering_actor == github.repository_owner &&
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.stage == 'prepare' && 120 || 30 }}
     defaults:
       run:
         shell: bash
@@ -224,7 +225,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout wallet source
-        if: inputs.stage == 'source'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: GLEECBTC/gleec-wallet
@@ -234,7 +235,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify source and pinned submodules
-        if: inputs.stage == 'source'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare'
         id: source
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -274,7 +275,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Apply Firebase production config patch
-        if: inputs.stage == 'source'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare'
         working-directory: ${{ env.WALLET_DIR }}
         env:
           FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
@@ -290,8 +291,78 @@ jobs:
           test -s lib/firebase_options.dart
           echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Fetch locked Flutter packages
+        if: inputs.stage == 'prepare'
+        working-directory: ${{ env.WALLET_DIR }}
+        run: |
+          flutter clean
+          flutter pub get --enforce-lockfile
+          git diff --exit-code -- pubspec.lock
+
+      - name: Generate macOS Pods project
+        if: inputs.stage == 'prepare'
+        working-directory: ${{ env.WALLET_DIR }}/macos
+        run: |
+          pod deintegrate
+          pod install
+          git diff --exit-code -- Podfile.lock
+
+      - name: Generate assets with the web build
+        if: inputs.stage == 'prepare'
+        working-directory: ${{ env.WALLET_DIR }}
+        env:
+          GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
+        run: flutter build web --no-pub
+
+      - name: Verify macOS KDF and generated assets
+        if: inputs.stage == 'prepare'
+        working-directory: ${{ env.WALLET_DIR }}
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          from urllib.parse import unquote, urljoin, urlparse
+
+          package_config = Path('.dart_tool/package_config.json').resolve()
+          packages = json.loads(package_config.read_text())['packages']
+          package = next(p for p in packages if p['name'] == 'komodo_defi_framework')
+          uri = urlparse(urljoin(package_config.as_uri(), package['rootUri']))
+          if uri.scheme != 'file':
+              raise SystemExit('Expected a local komodo_defi_framework package')
+          root = Path(unquote(uri.path))
+          config = json.loads((root / 'app_build/build_config.json').read_text())
+          for relative in config['coins']['mapped_files']:
+              path = root / relative
+              if not json.loads(path.read_text()):
+                  raise SystemExit(f'Empty generated config: {relative}')
+          for relative in config['coins']['mapped_folders']:
+              if not any(p.is_file() and p.stat().st_size for p in (root / relative).rglob('*.png')):
+                  raise SystemExit(f'Missing generated coin icons: {relative}')
+          kdf = root / config['api']['platforms']['macos']['path'] / 'kdf'
+          if not kdf.is_file() or not kdf.stat().st_size:
+              raise SystemExit('Missing macOS KDF executable')
+          subprocess.run(['lipo', '-verify_arch', 'arm64', str(kdf)], check=True)
+          architectures = subprocess.check_output(['lipo', '-archs', str(kdf)], text=True).strip()
+          subprocess.run(['otool', '-L', str(kdf)], check=True)
+          checksum = hashlib.sha256(kdf.read_bytes()).hexdigest()
+          dylib = root / 'macos/lib/libkdflib.dylib'
+          if dylib.exists():
+              subprocess.run(['lipo', '-verify_arch', 'arm64', str(dylib)], check=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('\n### Prepared macOS assets\n\n')
+              summary.write(f"KDF commit: `{config['api']['api_commit_hash']}`\n\n")
+              summary.write(f'KDF architectures: `{architectures}`\n\n')
+              summary.write(f'KDF executable SHA-256: `{checksum}`\n\n')
+              summary.write(f"Coins commit after generation: `{config['coins']['bundled_coins_repo_commit']}`\n\n")
+              summary.write('Required coin configs and icons are present; macOS KDF supports arm64.\n')
+          print('macOS KDF architecture and generated coin assets verified.')
+          PY
+
       - name: Remove temporary wallet checkout
-        if: always() && inputs.stage == 'source'
+        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare')
         run: |
           EXPECTED_DIR="$GITHUB_WORKSPACE/wallet-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test "$WALLET_DIR" = "$EXPECTED_DIR"

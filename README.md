@@ -19,6 +19,9 @@ Available `stage` inputs:
 - `source`: run the toolchain checks, check out the wallet's requested `ref`,
   verify pinned recursive submodules, and apply `FIREBASE_PATCH`. The isolated
   checkout is removed after the run. `build_type` defaults to `debug`.
+- `prepare`: run the source checks, fetch locked Flutter packages, install Pods,
+  build web assets, and verify generated coin assets and the macOS KDF executable's
+  arm64 support. Dependency lockfile changes fail the run.
 
 Environment setup uses shell commands, without third-party setup actions.
 Flutter is downloaded directly from Google's official Flutter release archive.
