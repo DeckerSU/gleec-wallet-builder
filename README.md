@@ -26,6 +26,16 @@ Available `stage` inputs:
   packages have passed `pub get --enforce-lockfile`.
   The web build retries once for the transformer's explicit "Coin assets were
   updated" signal; all other failures stop preparation.
+- `signing`: run preparation, import the Developer ID identity into a temporary
+  keychain, validate/install the matching profile, and sign a small test binary
+  without interactive prompts. The keychain search list is restored and temporary
+  signing material is removed after the job.
+
+The `macos-signing` GitHub environment is restricted to `main`. The signing stage
+uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
+`MACOS_PROVISIONING_PROFILE_BASE64` from that environment. Profile installation
+targets Xcode 16+ at `~/Library/Developer/Xcode/UserData/Provisioning Profiles`;
+existing profiles are preserved.
 
 Environment setup uses shell commands, without third-party setup actions.
 Flutter is downloaded directly from Google's official Flutter release archive.
