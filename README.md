@@ -31,6 +31,11 @@ Available `stage` inputs:
   without interactive prompts. The keychain search list is restored and temporary
   signing material is removed after the job.
 
+- `build`: run signing preflight, compile `--release --flavor production`, and
+  verify the app profile, entitlements, arm64 binaries, Developer ID signatures,
+  timestamps and hardened runtime. Build service settings come from repository
+  secrets; `debug`/`release` select the corresponding Matomo site ID.
+
 The `macos-signing` GitHub environment is restricted to `main`. The signing stage
 uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
 `MACOS_PROVISIONING_PROFILE_BASE64` from that environment. Profile installation
@@ -49,7 +54,7 @@ workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
 repository variable `MACOS_XCODE_PATH` to use a different developer directory.
 It does not change the system-wide Xcode selection or accept licenses.
 
-Results appear in the run's job summary and logs. Signing, notarization, DMG
+Results appear in the run's job summary and logs. Notarization, DMG
 packaging, and release publication will be added after the prerequisite stages
 pass on the runner.
 

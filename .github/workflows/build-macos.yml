@@ -15,6 +15,7 @@ on:
           - source
           - prepare
           - signing
+          - build
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -227,7 +228,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout wallet source
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: GLEECBTC/gleec-wallet
@@ -237,7 +238,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify source and pinned submodules
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         id: source
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -277,7 +278,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Apply Firebase production config patch
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
@@ -294,7 +295,7 @@ jobs:
           echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch locked Flutter packages
-        if: inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           flutter clean
@@ -302,7 +303,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
 
       - name: Generate macOS Pods project
-        if: inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}/macos
         run: |
           pod deintegrate
@@ -337,7 +338,7 @@ jobs:
           RUBY
 
       - name: Generate assets with the web build
-        if: inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
@@ -361,7 +362,7 @@ jobs:
           fi
 
       - name: Verify macOS KDF and generated assets
-        if: inputs.stage == 'prepare' || inputs.stage == 'signing'
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           python3 <<'PY'
@@ -408,7 +409,7 @@ jobs:
           PY
 
       - name: Install signing identity in a temporary keychain
-        if: inputs.stage == 'signing'
+        if: contains(fromJSON('["signing","build"]'), inputs.stage)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -497,7 +498,7 @@ jobs:
           rm -f "$SIGNING_DIR/identity.p12"
 
       - name: Verify noninteractive code signing
-        if: inputs.stage == 'signing'
+        if: contains(fromJSON('["signing","build"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           printf 'int main(void) { return 0; }\n' > "$SIGNING_DIR/probe.c"
@@ -508,8 +509,91 @@ jobs:
           codesign --display --verbose=4 "$SIGNING_DIR/probe"
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Build signed macOS application
+        if: inputs.stage == 'build'
+        timeout-minutes: 45
+        working-directory: ${{ env.WALLET_DIR }}
+        env:
+          GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
+          FEEDBACK_API_KEY: ${{ secrets.FEEDBACK_API_KEY }}
+          FEEDBACK_PRODUCTION_URL: ${{ secrets.FEEDBACK_PRODUCTION_URL }}
+          TRELLO_BOARD_ID: ${{ secrets.TRELLO_BOARD_ID }}
+          TRELLO_LIST_ID: ${{ secrets.TRELLO_LIST_ID }}
+          MATOMO_URL: ${{ secrets.MATOMO_URL }}
+          MATOMO_SITE_ID: ${{ inputs.build_type == 'release' && (secrets.MATOMO_SITE_ID_RELEASE || '2') || (secrets.MATOMO_SITE_ID_DEBUG || '3') }}
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          ARGS=(
+            "--dart-define=COMMIT_HASH=$SHORT_SHA"
+            "--dart-define=BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%MZ')"
+          )
+          for NAME in FEEDBACK_API_KEY FEEDBACK_PRODUCTION_URL TRELLO_BOARD_ID TRELLO_LIST_ID MATOMO_URL MATOMO_SITE_ID; do
+            test -n "${!NAME}" || { echo "::error::Required build setting $NAME is missing"; exit 1; }
+            ARGS+=("--dart-define=$NAME=${!NAME}")
+          done
+          # Verbose Flutter output can expose base64-encoded Dart defines.
+          flutter build macos --no-pub --release --flavor production "${ARGS[@]}"
+          APP="$WALLET_DIR/build/macos/Build/Products/Release-production/Gleec DEX.app"
+          test -d "$APP"
+          printf 'APP=%s\n' "$APP" >> "$GITHUB_ENV"
+          printf '\nmacOS release compilation completed; service configuration: `%s`.\n' "$BUILD_TYPE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify app identity, entitlements and nested signatures
+        if: inputs.stage == 'build'
+        run: |
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          python3 <<'PY'
+          import os, plistlib, subprocess
+          from pathlib import Path
+          app = Path(os.environ['APP'])
+          info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
+          if info['CFBundleIdentifier'] != 'com.GleecDEX.wallet':
+              raise SystemExit('Unexpected app bundle identifier')
+          executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+          subprocess.run(['lipo', str(executable), '-verify_arch', 'arm64'], check=True)
+          entitlements = plistlib.loads(subprocess.check_output(['codesign', '--display', '--entitlements', ':-', str(app)], stderr=subprocess.DEVNULL))
+          if entitlements.get('com.apple.security.get-task-allow'):
+              raise SystemExit('Distribution app must not allow debugging')
+          if not entitlements.get('com.apple.security.app-sandbox'):
+              raise SystemExit('Expected the production app sandbox entitlement')
+          embedded = app / 'Contents/embedded.provisionprofile'
+          profile = plistlib.loads(subprocess.check_output(['security', 'cms', '-D', '-i', str(embedded)]))
+          if profile['TeamIdentifier'] != ['B52ZCS7TMQ']:
+              raise SystemExit('Unexpected embedded provisioning profile team')
+          # Inspect each real Mach-O file, including helpers inside frameworks.
+          magics = {b'\xfe\xed\xfa\xce', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}
+          binaries = []
+          errors = []
+          for binary in app.rglob('*'):
+              if binary.is_symlink() or not binary.is_file():
+                  continue
+              with binary.open('rb') as stream:
+                  if stream.read(4) not in magics:
+                      continue
+              binaries.append(binary)
+              relative = binary.relative_to(app)
+              subprocess.run(['lipo', str(binary), '-verify_arch', 'arm64'], check=True)
+              result = subprocess.run(['codesign', '--display', '--verbose=4', str(binary)], capture_output=True, text=True)
+              details = result.stderr
+              if result.returncode or 'TeamIdentifier=B52ZCS7TMQ' not in details or 'Authority=Developer ID Application:' not in details:
+                  errors.append(f'{relative}: missing expected Developer ID signature')
+              if 'Timestamp=' not in details:
+                  errors.append(f'{relative}: missing secure timestamp')
+              header = subprocess.check_output(['otool', '-hv', str(binary)], text=True)
+              if 'EXECUTE' in header and 'runtime' not in details:
+                  errors.append(f'{relative}: missing hardened runtime')
+              print(f'Inspected: {relative}')
+          if not binaries:
+              raise SystemExit('No Mach-O binaries found')
+          if errors:
+              raise SystemExit('\n'.join(errors))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'\nVerified app profile/entitlements and {len(binaries)} arm64-compatible Developer ID signed binaries with timestamps.\n')
+          PY
+
       - name: Remove temporary signing material
-        if: always() && inputs.stage == 'signing'
+        if: always() && contains(fromJSON('["signing","build"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import json, os, shutil, subprocess
@@ -549,7 +633,7 @@ jobs:
           PY
 
       - name: Remove temporary wallet checkout
-        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || inputs.stage == 'signing')
+        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage))
         run: |
           EXPECTED_DIR="$GITHUB_WORKSPACE/wallet-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test "$WALLET_DIR" = "$EXPECTED_DIR"
