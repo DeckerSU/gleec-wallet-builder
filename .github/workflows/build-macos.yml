@@ -318,7 +318,7 @@ jobs:
           local_sources = original.fetch('EXTERNAL SOURCES', {})
           changed.each do |name|
             source = local_sources.fetch(name, {})
-            path = source[':path']
+            path = source[:path]
             unless original_checksums.key?(name) && current_checksums.key?(name) &&
                    path && path.start_with?('Flutter/ephemeral/.symlinks/plugins/')
               abort "Unexpected checksum change for nonlocal pod: #{name}"
