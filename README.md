@@ -3,6 +3,29 @@
 CI builder for [GLEECBTC/gleec-wallet](https://github.com/GLEECBTC/gleec-wallet)
 desktop releases (Linux + Windows).
 
+## Workflow: `Build Gleec Wallet macOS`
+
+Separate macOS workflow under incremental development, running on the
+`self-hosted`, `macOS`, `ARM64` runner. Manual dispatch and reruns are restricted
+to the repository owner, from this repository's `main` branch.
+
+Available `stage` inputs:
+
+- `diagnostics` (default): inventory installed tools and the runner's GUI session.
+  Missing tools are reported without failing the inventory. No checkout or signing
+  secrets are used.
+- `toolchain`: install Flutter 3.41.4 for arm64, download macOS/web artifacts,
+  and require full Xcode with completed first launch and CocoaPods 1.16.2.
+
+Xcode is installed and initialized once on the Mac by its administrator. The
+workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
+repository variable `MACOS_XCODE_PATH` to use a different developer directory.
+It does not change the system-wide Xcode selection or accept licenses.
+
+Results appear in the run's job summary and logs. Signing, notarization, DMG
+packaging, and release publication will be added after the prerequisite stages
+pass on the runner.
+
 ## Workflow: `Build Gleec Wallet Desktop`
 
 Manually triggered (`workflow_dispatch`), **repo owner only** (enforced via

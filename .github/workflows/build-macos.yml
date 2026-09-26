@@ -11,6 +11,7 @@ on:
         type: choice
         options:
           - diagnostics
+          - toolchain
         default: diagnostics
 
 permissions:
@@ -22,7 +23,7 @@ concurrency:
 
 jobs:
   build_macos:
-    name: macOS runner diagnostics
+    name: macOS ${{ inputs.stage }}
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.repository == 'DeckerSU/gleec-wallet-builder' &&
@@ -30,7 +31,7 @@ jobs:
       github.triggering_actor == github.repository_owner &&
       github.ref == 'refs/heads/main'
     runs-on: [self-hosted, macOS, ARM64]
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -38,6 +39,7 @@ jobs:
       CI: "true"
       COCOAPODS_DISABLE_STATS: "true"
       FLUTTER_SUPPRESS_ANALYTICS: "true"
+      FLUTTER_VERSION: "3.41.4"
 
     steps:
       # No checkout or secrets: inspect the actual service environment first.
@@ -106,6 +108,57 @@ jobs:
             done
             printf '```\n'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install pinned Flutter SDK
+        if: inputs.stage == 'toolchain'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          architecture: arm64
+          cache: false
+          pub-cache: false
+
+      - name: Verify Flutter and download macOS and web artifacts
+        if: inputs.stage == 'toolchain'
+        run: |
+          flutter --version --machine > "$RUNNER_TEMP/gleec-flutter-version.json"
+          python3 - "$RUNNER_TEMP/gleec-flutter-version.json" <<'PY'
+          import json
+          import os
+          import sys
+          with open(sys.argv[1]) as source:
+              version = json.load(source)
+          expected = os.environ['FLUTTER_VERSION']
+          if version['frameworkVersion'] != expected:
+              raise SystemExit(f"Expected Flutter {expected}, got {version['frameworkVersion']}")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"\n### Selected Flutter SDK\n\nFlutter: {expected}\n\n")
+              summary.write(f"Dart: {version['dartSdkVersion']}\n")
+          PY
+          flutter precache --macos --web
+
+      - name: Require full Xcode and working CocoaPods
+        if: inputs.stage == 'toolchain'
+        env:
+          REQUESTED_XCODE_PATH: ${{ vars.MACOS_XCODE_PATH }}
+        run: |
+          XCODE_PATH="${REQUESTED_XCODE_PATH:-/Applications/Xcode.app/Contents/Developer}"
+          if [ ! -x "$XCODE_PATH/usr/bin/xcodebuild" ]; then
+            echo '::error::Full Xcode is required. Install Xcode.app and complete its first launch on the Mac. For a custom location, set MACOS_XCODE_PATH to its Contents/Developer directory.'
+            echo '### Toolchain blocked: full Xcode is not installed at the configured path.' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          export DEVELOPER_DIR="$XCODE_PATH"
+          printf 'DEVELOPER_DIR=%s\n' "$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          xcodebuild -version
+          xcodebuild -checkFirstLaunchStatus
+          xcrun --sdk macosx --show-sdk-version
+          xcrun notarytool --version
+          xcrun --find stapler
+          pod --version
+          ruby -r cocoapods -e 'abort "Expected CocoaPods 1.16.2" unless Pod::VERSION == "1.16.2"; puts "CocoaPods Ruby libraries load successfully"'
+          flutter doctor -v
 
       - name: Inspect runner session
         run: |
