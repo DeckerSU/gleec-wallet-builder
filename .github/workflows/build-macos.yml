@@ -304,9 +304,35 @@ jobs:
         working-directory: ${{ env.WALLET_DIR }}/macos
         run: |
           pod deintegrate
-          # Refresh spec metadata while retaining the versions in Podfile.lock.
-          pod install --repo-update --deployment
-          git diff --exit-code -- Podfile.lock
+          # Refresh spec metadata while retaining locked dependency versions.
+          pod install --repo-update
+          git show HEAD:macos/Podfile.lock > "$RUNNER_TEMP/gleec-Podfile.lock"
+          ruby -r cocoapods <<'RUBY'
+          original = Pod::Lockfile.from_file(Pathname.new(ENV.fetch('RUNNER_TEMP')).join('gleec-Podfile.lock')).to_hash
+          current = Pod::Lockfile.from_file(Pathname.new('Podfile.lock')).to_hash
+          original_checksums = original.fetch('SPEC CHECKSUMS')
+          current_checksums = current.fetch('SPEC CHECKSUMS')
+          changed = (original_checksums.keys | current_checksums.keys).select do |name|
+            original_checksums[name] != current_checksums[name]
+          end
+          local_sources = original.fetch('EXTERNAL SOURCES', {})
+          changed.each do |name|
+            source = local_sources.fetch(name, {})
+            path = source[':path']
+            unless original_checksums.key?(name) && current_checksums.key?(name) &&
+                   path && path.start_with?('Flutter/ephemeral/.symlinks/plugins/')
+              abort "Unexpected checksum change for nonlocal pod: #{name}"
+            end
+            # Dart packages are already verified by pub get --enforce-lockfile.
+            original_checksums[name] = current_checksums[name]
+          end
+          abort 'Pod dependency versions or sources changed' unless original == current
+          unless changed.empty?
+            message = "Local Flutter podspec checksums refreshed (versions unchanged): #{changed.sort.join(', ')}"
+            puts message
+            File.open(ENV.fetch('GITHUB_STEP_SUMMARY'), 'a') { |f| f.puts "\n#{message}\n" }
+          end
+          RUBY
 
       - name: Generate assets with the web build
         if: inputs.stage == 'prepare'

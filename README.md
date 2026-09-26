@@ -21,7 +21,9 @@ Available `stage` inputs:
   checkout is removed after the run. `build_type` defaults to `debug`.
 - `prepare`: run the source checks, fetch locked Flutter packages, install Pods,
   build web assets, and verify generated coin assets and the macOS KDF executable's
-  arm64 support. Dependency lockfile changes fail the run.
+  arm64 support. Dependency version/source changes fail the run; checksum-only
+  changes for local Flutter plugin podspecs are recorded and allowed after Dart
+  packages have passed `pub get --enforce-lockfile`.
 
 Environment setup uses shell commands, without third-party setup actions.
 Flutter is downloaded directly from Google's official Flutter release archive.
