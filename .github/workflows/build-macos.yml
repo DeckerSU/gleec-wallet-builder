@@ -304,7 +304,8 @@ jobs:
         working-directory: ${{ env.WALLET_DIR }}/macos
         run: |
           pod deintegrate
-          pod install
+          # Refresh spec metadata while retaining the versions in Podfile.lock.
+          pod install --repo-update --deployment
           git diff --exit-code -- Podfile.lock
 
       - name: Generate assets with the web build
