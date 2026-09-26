@@ -16,6 +16,16 @@ Available `stage` inputs:
   secrets are used.
 - `toolchain`: install Flutter 3.41.4 for arm64, download macOS/web artifacts,
   and require full Xcode with completed first launch and CocoaPods 1.16.2.
+- `source`: run the toolchain checks, check out the wallet's requested `ref`,
+  verify pinned recursive submodules, and apply `FIREBASE_PATCH`. The isolated
+  checkout is removed after the run. `build_type` defaults to `debug`.
+
+Environment setup uses shell commands, without third-party setup actions.
+Flutter is downloaded directly from Google's official Flutter release archive.
+The archive's SHA-256 and SDK git revision are pinned in the workflow and verified
+before use. Each run installs into a temporary directory and removes it afterward.
+When updating Flutter, update all three pins from the official
+[macOS release manifest](https://storage.googleapis.com/flutter_infra_release/releases/releases_macos.json).
 
 Xcode is installed and initialized once on the Mac by its administrator. The
 workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
