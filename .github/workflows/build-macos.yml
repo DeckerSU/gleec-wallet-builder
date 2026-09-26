@@ -509,6 +509,25 @@ jobs:
           codesign --display --verbose=4 "$SIGNING_DIR/probe"
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Harden the legacy KDF helper signing phase
+        if: inputs.stage == 'build'
+        working-directory: ${{ env.WALLET_DIR }}
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          project = Path('macos/Runner.xcodeproj/project.pbxproj')
+          content = project.read_text()
+          old = r'/usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \"$KDF_HELPER\"'
+          new = r'/usr/bin/codesign --force --options runtime --timestamp --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" \"$KDF_HELPER\"'
+          if old in content:
+              if content.count(old) != 1:
+                  raise SystemExit('Ambiguous legacy KDF signing phase')
+              project.write_text(content.replace(old, new))
+              print('Enabled hardened runtime and timestamp for the KDF helper signing phase.')
+          else:
+              print('No legacy KDF signing invocation found; final binary signature checks remain required.')
+          PY
+
       - name: Build signed macOS application
         if: inputs.stage == 'build'
         timeout-minutes: 45
@@ -532,6 +551,13 @@ jobs:
             test -n "${!NAME}" || { echo "::error::Required build setting $NAME is missing"; exit 1; }
             ARGS+=("--dart-define=$NAME=${!NAME}")
           done
+          # Mask encoded defines too, in case an Xcode error prints build settings.
+          python3 - "${ARGS[@]}" <<'PY'
+          import base64, sys
+          for argument in sys.argv[1:]:
+              value = argument.removeprefix('--dart-define=')
+              print('::add-mask::' + base64.b64encode(value.encode()).decode())
+          PY
           # Verbose Flutter output can expose base64-encoded Dart defines.
           flutter build macos --no-pub --release --flavor production "${ARGS[@]}"
           APP="$WALLET_DIR/build/macos/Build/Products/Release-production/Gleec DEX.app"
@@ -626,9 +652,9 @@ jobs:
               result = subprocess.run(['security', 'delete-keychain', str(keychain)])
               if result.returncode:
                   errors.append('Could not delete temporary keychain')
+          shutil.rmtree(root)
           if errors:
               raise SystemExit('; '.join(errors))
-          shutil.rmtree(root)
           print('Temporary signing material removed; keychain search list restored.')
           PY
 
