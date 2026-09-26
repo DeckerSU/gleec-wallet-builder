@@ -388,13 +388,13 @@ jobs:
           kdf = root / config['api']['platforms']['macos']['path'] / 'kdf'
           if not kdf.is_file() or not kdf.stat().st_size:
               raise SystemExit('Missing macOS KDF executable')
-          subprocess.run(['lipo', '-verify_arch', 'arm64', str(kdf)], check=True)
-          architectures = subprocess.check_output(['lipo', '-archs', str(kdf)], text=True).strip()
+          subprocess.run(['lipo', str(kdf), '-verify_arch', 'arm64'], check=True)
+          architectures = subprocess.check_output(['lipo', str(kdf), '-archs'], text=True).strip()
           subprocess.run(['otool', '-L', str(kdf)], check=True)
           checksum = hashlib.sha256(kdf.read_bytes()).hexdigest()
           dylib = root / 'macos/lib/libkdflib.dylib'
           if dylib.exists():
-              subprocess.run(['lipo', '-verify_arch', 'arm64', str(dylib)], check=True)
+              subprocess.run(['lipo', str(dylib), '-verify_arch', 'arm64'], check=True)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write('\n### Prepared macOS assets\n\n')
               summary.write(f"KDF commit: `{config['api']['api_commit_hash']}`\n\n")
