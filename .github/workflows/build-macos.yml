@@ -1,0 +1,137 @@
+name: Build Gleec Wallet macOS
+
+run-name: "macOS ${{ inputs.stage }} (by @${{ github.actor }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: "Last implemented stage to run"
+        required: true
+        type: choice
+        options:
+          - diagnostics
+        default: diagnostics
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gleec-macos-runner
+  cancel-in-progress: false
+
+jobs:
+  build_macos:
+    name: macOS runner diagnostics
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'DeckerSU/gleec-wallet-builder' &&
+      github.actor == github.repository_owner &&
+      github.triggering_actor == github.repository_owner &&
+      github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: "true"
+      COCOAPODS_DISABLE_STATS: "true"
+      FLUTTER_SUPPRESS_ANALYTICS: "true"
+
+    steps:
+      # No checkout or secrets: inspect the actual service environment first.
+      - name: Verify runner platform
+        run: |
+          {
+            echo '## macOS runner diagnostics'
+            printf '\nRunner: `%s`\n' "$RUNNER_NAME"
+            printf '\nWorkflow commit: `%s`\n' "$GITHUB_SHA"
+            printf '\nPlatform: `%s / %s`\n' "$RUNNER_OS" "$RUNNER_ARCH"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$RUNNER_OS" = macOS
+          test "$RUNNER_ARCH" = ARM64
+          test "$(uname -m)" = arm64
+
+      - name: Inspect installed tools
+        run: |
+          # Missing tools are findings, not failures of this inventory stage.
+          # Bound each probe so an interactive first launch cannot hang the job.
+          probe() {
+            local label="$1"
+            shift
+            printf '\n### %s\n\n```text\n' "$label"
+            if command -v "$1" >/dev/null 2>&1; then
+              local result=0
+              /usr/bin/perl -e 'alarm 60; exec @ARGV or die "exec failed: $!\n"' -- "$@" 2>&1 || result=$?
+              printf '\nProbe exit code: %s\n' "$result"
+            else
+              printf 'MISSING: %s\n' "$1"
+            fi
+            printf '```\n'
+          }
+
+          {
+            probe 'macOS version' sw_vers
+            probe 'Architecture' uname -m
+            probe 'Free space (workspace)' df -h "$GITHUB_WORKSPACE"
+            probe 'Free space (temporary directory)' df -h "$RUNNER_TEMP"
+            probe 'Selected developer directory' xcode-select -p
+            probe 'Xcode version' xcodebuild -version
+            probe 'Xcode first-launch status' xcodebuild -checkFirstLaunchStatus
+            probe 'macOS SDK version' xcrun --sdk macosx --show-sdk-version
+            probe 'macOS SDK path' xcrun --sdk macosx --show-sdk-path
+            probe 'notarytool' xcrun notarytool --version
+            probe 'stapler location' xcrun --find stapler
+            probe 'Git' git --version
+            probe 'Homebrew' brew --version
+            probe 'Flutter' flutter --version
+            probe 'Dart' dart --version
+            probe 'Ruby' ruby --version
+            probe 'Bundler' bundle --version
+            probe 'CocoaPods' pod --version
+            probe 'CMake' cmake --version
+            probe 'Ninja' ninja --version
+            probe 'Rust' rustc --version
+            probe 'Python' python3 --version
+            printf '\n### Apple utilities\n\n```text\n'
+            for tool in codesign security hdiutil ditto osascript file lipo otool; do
+              command -v "$tool" || printf 'MISSING: %s\n' "$tool"
+            done
+            printf '```\n\n### Installed Xcode applications\n\n```text\n'
+            for app in /Applications/Xcode*.app; do
+              if [ -d "$app" ]; then
+                printf '%s\n' "$app"
+              fi
+            done
+            printf '```\n'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Inspect runner session
+        run: |
+          {
+            echo '### Packaging session prerequisites'
+            echo
+            RUNNER_UID=$(id -u)
+            CONSOLE_UID=$(stat -f '%u' /dev/console)
+            if [ "$RUNNER_UID" = "$CONSOLE_UID" ]; then
+              echo '- Runner user owns the console session: yes'
+            else
+              echo '- Runner user owns the console session: no'
+            fi
+            if launchctl print "gui/$RUNNER_UID" >/dev/null 2>&1; then
+              echo '- GUI launchd domain for runner user: available'
+            else
+              echo '- GUI launchd domain for runner user: unavailable'
+            fi
+            if pgrep -u "$RUNNER_UID" -x Finder >/dev/null 2>&1; then
+              echo '- Finder for runner user: running'
+            else
+              echo '- Finder for runner user: not running'
+            fi
+            TRANSLATED=$(sysctl -in sysctl.proc_translated 2>/dev/null || true)
+            printf -- '- Rosetta translation: %s\n' "${TRANSLATED:-0 (not reported)}"
+            echo
+            echo 'Finder automation/TCC and disk-image mounting still require a separate packaging test.'
+            echo 'No signing identities, provisioning profiles, or notarization credentials were accessed.'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
