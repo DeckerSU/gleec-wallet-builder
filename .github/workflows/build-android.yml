@@ -1,0 +1,350 @@
+name: Build Gleec Wallet Android
+run-name: Android ${{ inputs.stage }} / ${{ inputs.artifact_type }} (by @${{ github.actor }})
+'on':
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to run
+        required: true
+        type: choice
+        options:
+        - diagnostics
+        - toolchain
+        - source
+        - prepare
+        default: diagnostics
+      ref:
+        description: gleec-wallet branch, tag or commit SHA
+        required: true
+        default: main
+      build_type:
+        description: Service configuration and release tag prefix
+        required: true
+        type: choice
+        options:
+        - debug
+        - release
+        default: debug
+      artifact_type:
+        description: Android output format
+        required: true
+        type: choice
+        options:
+        - appbundle
+        - apk
+        default: appbundle
+      build_number:
+        description: Android versionCode (increase for each Google Play upload)
+        required: true
+        type: string
+        default: '16'
+permissions:
+  contents: read
+concurrency:
+  group: gleec-macos-runner
+  cancel-in-progress: false
+jobs:
+  build_android:
+    name: Android ${{ inputs.stage }}
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'DeckerSU/gleec-wallet-builder' && github.actor ==
+      github.repository_owner && github.triggering_actor == github.repository_owner && github.ref == 'refs/heads/main'
+    runs-on:
+    - self-hosted
+    - macOS
+    - ARM64
+    timeout-minutes: 150
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: 'true'
+      FLUTTER_SUPPRESS_ANALYTICS: 'true'
+      FLUTTER_VERSION: 3.41.4
+      FLUTTER_ARCHIVE_SHA256: 16984a0dae1f13c7b3e05b973913a939144b7e9e3aa6439fa3382599a6326f8c
+      FLUTTER_REVISION: ff37bef603469fb030f2b72995ab929ccfc227f0
+      WALLET_DIR: ${{ github.workspace }}/wallet-android-${{ github.run_id }}-${{ github.run_attempt }}
+      BUILD_NUMBER: ${{ inputs.build_number }}
+      ARTIFACT_TYPE: ${{ inputs.artifact_type }}
+    steps:
+    - name: Verify inputs and inspect Android runner
+      run: |
+        test "$RUNNER_OS" = macOS
+        test "$RUNNER_ARCH" = ARM64
+        test "$(uname -m)" = arm64
+        python3 <<'PY'
+        import os, re
+        value = os.environ['BUILD_NUMBER']
+        if not re.fullmatch(r'[1-9][0-9]{0,9}', value) or int(value) > 2100000000:
+            raise SystemExit('build_number must be an integer from 1 to 2100000000')
+        if os.environ['ARTIFACT_TYPE'] not in ('appbundle', 'apk'):
+            raise SystemExit('Choose appbundle or apk')
+        PY
+        {
+          echo '## Android runner diagnostics'
+          printf '\nRunner: `%s`\n\nBuilder: `%s`\n' "$RUNNER_NAME" "$GITHUB_SHA"
+          sw_vers
+          df -h "$GITHUB_WORKSPACE"
+          /usr/libexec/java_home -V 2>&1 || true
+          printf '\nExisting Android SDK directories:\n'
+          for directory in "$HOME/Library/Android/sdk" "$HOME/Library/Caches/gleec-wallet-builder/android-sdk"; do
+            if [ -d "$directory" ]; then ls -ld "$directory"; fi
+          done
+          if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo 'Rosetta x86_64 execution: available'
+          else
+            echo 'Rosetta x86_64 execution: unavailable (some Android build tools may require it)'
+          fi
+        } | tee -a "$GITHUB_STEP_SUMMARY"
+    - name: Create isolated Android build directories
+      if: inputs.stage != 'diagnostics'
+      run: |
+        umask 077
+        ANDROID_RUN_DIR=$(mktemp -d "$RUNNER_TEMP/gleec-android.XXXXXXXX")
+        {
+          printf 'ANDROID_RUN_DIR=%s\n' "$ANDROID_RUN_DIR"
+          printf 'GRADLE_USER_HOME=%s/gradle\n' "$ANDROID_RUN_DIR"
+          printf 'ANDROID_USER_HOME=%s/android-user\n' "$ANDROID_RUN_DIR"
+          printf 'ANDROID_HOME=%s/Library/Caches/gleec-wallet-builder/android-sdk\n' "$HOME"
+          printf 'ANDROID_SDK_ROOT=%s/Library/Caches/gleec-wallet-builder/android-sdk\n' "$HOME"
+        } >> "$GITHUB_ENV"
+    - name: Install pinned Temurin JDK 17 for Apple Silicon
+      if: inputs.stage != 'diagnostics'
+      timeout-minutes: 15
+      env:
+        JDK_URL: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jdk_aarch64_mac_hotspot_17.0.20.1_1.tar.gz
+        JDK_SHA256: 196d13ba5f10414bef7f6a05a9b3f00edacb18ebacef2b99485db9e2ee18f0e8
+      run: |
+        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+          --connect-timeout 30 --max-time 900 "$JDK_URL" -o "$ANDROID_RUN_DIR/jdk.tar.gz"
+        printf '%s  %s\n' "$JDK_SHA256" "$ANDROID_RUN_DIR/jdk.tar.gz" | shasum -a 256 --check -
+        mkdir "$ANDROID_RUN_DIR/jdk"
+        tar -xzf "$ANDROID_RUN_DIR/jdk.tar.gz" -C "$ANDROID_RUN_DIR/jdk" --strip-components=1
+        rm "$ANDROID_RUN_DIR/jdk.tar.gz"
+        JAVA_HOME="$ANDROID_RUN_DIR/jdk/Contents/Home"
+        test -x "$JAVA_HOME/bin/javac"
+        printf 'JAVA_HOME=%s\n' "$JAVA_HOME" >> "$GITHUB_ENV"
+        printf '%s/bin\n' "$JAVA_HOME" >> "$GITHUB_PATH"
+        "$JAVA_HOME/bin/java" -version
+    - name: Install Android command-line tools and SDK packages
+      if: inputs.stage != 'diagnostics'
+      timeout-minutes: 35
+      run: |
+        mkdir -p "$ANDROID_HOME/cmdline-tools"
+        if [ ! -x "$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager" ]; then
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+            --connect-timeout 30 --max-time 900 \
+            https://dl.google.com/android/repository/commandlinetools-mac-13114758_latest.zip \
+            -o "$ANDROID_RUN_DIR/commandlinetools.zip"
+          printf '%s  %s\n' '5673201e6f3869f418eeed3b5cb6c4be7401502bd0aae1b12a29d164d647a54e' \
+            "$ANDROID_RUN_DIR/commandlinetools.zip" | shasum -a 256 --check -
+          ditto -x -k "$ANDROID_RUN_DIR/commandlinetools.zip" "$ANDROID_RUN_DIR/cmdline"
+          mv "$ANDROID_RUN_DIR/cmdline/cmdline-tools" "$ANDROID_HOME/cmdline-tools/19.0"
+          rm "$ANDROID_RUN_DIR/commandlinetools.zip"
+        fi
+        SDKMANAGER="$ANDROID_HOME/cmdline-tools/19.0/bin/sdkmanager"
+        "$SDKMANAGER" --version
+        # Repository owner authorized accepting Android SDK licenses on 2026-09-27.
+        # Ignore only yes's SIGPIPE, never sdkmanager's exit status.
+        set +e
+        yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+        RESULTS=("${PIPESTATUS[@]}")
+        set -e
+        test "${RESULTS[1]}" -eq 0
+        "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install \
+          'platform-tools' 'platforms;android-35' 'platforms;android-36' \
+          'build-tools;35.0.0' 'build-tools;36.0.0' \
+          'ndk;27.0.12077973' 'ndk;28.2.13676358' 'cmake;3.22.1'
+        {
+          printf '%s/cmdline-tools/19.0/bin\n' "$ANDROID_HOME"
+          printf '%s/platform-tools\n' "$ANDROID_HOME"
+          printf '%s/build-tools/35.0.0\n' "$ANDROID_HOME"
+        } >> "$GITHUB_PATH"
+        "$ANDROID_HOME/build-tools/35.0.0/aapt2" version
+        "$ANDROID_HOME/cmake/3.22.1/bin/cmake" --version
+        "$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang" --version
+        "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --list_installed >> "$GITHUB_STEP_SUMMARY"
+    - name: Install Flutter from the official archive
+      if: inputs.stage != 'diagnostics'
+      timeout-minutes: 20
+      run: |
+        FLUTTER_INSTALL_DIR=$(mktemp -d "$RUNNER_TEMP/gleec-flutter.XXXXXXXX")
+        printf 'FLUTTER_INSTALL_DIR=%s\n' "$FLUTTER_INSTALL_DIR" >> "$GITHUB_ENV"
+        ARCHIVE="$FLUTTER_INSTALL_DIR/flutter.zip"
+        ARCHIVE_URL="https://storage.googleapis.com/flutter_infra_release/releases/stable/macos/flutter_macos_arm64_${FLUTTER_VERSION}-stable.zip"
+        echo "Downloading Flutter $FLUTTER_VERSION (macOS arm64) from the official release archive."
+        curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+          --retry 3 --connect-timeout 30 --max-time 900 \
+          "$ARCHIVE_URL" --output "$ARCHIVE"
+        printf '%s  %s\n' "$FLUTTER_ARCHIVE_SHA256" "$ARCHIVE" | shasum -a 256 --check -
+        ditto -x -k "$ARCHIVE" "$FLUTTER_INSTALL_DIR"
+        rm -f "$ARCHIVE"
+        FLUTTER_ROOT="$FLUTTER_INSTALL_DIR/flutter"
+        test "$(git -C "$FLUTTER_ROOT" rev-parse HEAD)" = "$FLUTTER_REVISION"
+        test -x "$FLUTTER_ROOT/bin/flutter"
+        printf 'FLUTTER_ROOT=%s\n' "$FLUTTER_ROOT" >> "$GITHUB_ENV"
+        printf '%s\n' "$FLUTTER_ROOT/bin" >> "$GITHUB_PATH"
+        {
+          echo '### Flutter archive verification'
+          printf '\nVersion: `%s` (macOS arm64)\n' "$FLUTTER_VERSION"
+          printf '\nSHA-256: `%s` — verified before extraction\n' "$FLUTTER_ARCHIVE_SHA256"
+          printf '\nSDK revision: `%s` — verified\n' "$FLUTTER_REVISION"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Verify Flutter and download Android and web artifacts
+      if: inputs.stage != 'diagnostics'
+      run: |
+        flutter --version --machine > "$RUNNER_TEMP/gleec-flutter-version.json"
+        python3 - "$RUNNER_TEMP/gleec-flutter-version.json" <<'PY'
+        import json
+        import os
+        import sys
+        with open(sys.argv[1]) as source:
+            version = json.load(source)
+        expected = os.environ['FLUTTER_VERSION']
+        if version['frameworkVersion'] != expected:
+            raise SystemExit(f"Expected Flutter {expected}, got {version['frameworkVersion']}")
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+            summary.write(f"\n### Selected Flutter SDK\n\nFlutter: {expected}\n\n")
+            summary.write(f"Dart: {version['dartSdkVersion']}\n")
+        PY
+        flutter precache --android --web
+        flutter doctor -v
+    - name: Checkout wallet source
+      if: contains(fromJSON('["source","prepare","signing","build","publish"]'), inputs.stage)
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: GLEECBTC/gleec-wallet
+        ref: ${{ inputs.ref }}
+        path: wallet-android-${{ github.run_id }}-${{ github.run_attempt }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Verify source and pinned submodules
+      if: contains(fromJSON('["source","prepare","signing","build","publish"]'), inputs.stage)
+      id: source
+      working-directory: ${{ env.WALLET_DIR }}
+      env:
+        SOURCE_REF: ${{ inputs.ref }}
+        BUILD_TYPE: ${{ inputs.build_type }}
+      run: |
+        git submodule sync --recursive
+        git submodule update --init --recursive --checkout
+        git config fetch.recurseSubmodules on-demand
+        git submodule status --recursive > "$ANDROID_RUN_DIR/submodules.txt"
+        cat "$ANDROID_RUN_DIR/submodules.txt"
+        if grep -Eq '^[-+U]' "$ANDROID_RUN_DIR/submodules.txt"; then
+          echo '::error::Submodules do not match the commits pinned in the source tree.'
+          exit 1
+        fi
+        test -z "$(git status --porcelain)"
+        COMMIT_SHA=$(git rev-parse HEAD)
+        SHORT_SHA=$(git rev-parse --short=7 HEAD)
+        SDK_SHA=$(git -C sdk rev-parse HEAD)
+        if git show-ref --verify --quiet "refs/tags/$SOURCE_REF"; then
+          SAFE_ID=$(python3 -c 'import os,re; print(re.sub(r"[/\\:*?\"<>|~^\s]", "-", os.environ["SOURCE_REF"]))')
+        else
+          SAFE_ID="$SHORT_SHA"
+        fi
+        {
+          printf 'commit_sha=%s\n' "$COMMIT_SHA"
+          printf 'short_sha=%s\n' "$SHORT_SHA"
+          printf 'sdk_sha=%s\n' "$SDK_SHA"
+          printf 'safe_id=%s\n' "$SAFE_ID"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo '### Verified source'
+          printf '\nWallet commit: `%s`\n' "$COMMIT_SHA"
+          printf '\nSDK commit: `%s`\n' "$SDK_SHA"
+          printf '\nBuild type: `%s`\n' "$BUILD_TYPE"
+          printf '\nRelease identifier: `%s_%s`\n' "$BUILD_TYPE" "$SAFE_ID"
+        } >> "$GITHUB_STEP_SUMMARY"
+    - name: Apply Firebase production config patch
+      if: contains(fromJSON('["source","prepare","signing","build","publish"]'), inputs.stage)
+      working-directory: ${{ env.WALLET_DIR }}
+      env:
+        FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
+      run: |
+        test -n "$FIREBASE_PATCH" || { echo '::error::FIREBASE_PATCH is not set'; exit 1; }
+        umask 077
+        PATCH_FILE=$(mktemp "$RUNNER_TEMP/gleec-firebase.XXXXXXXX")
+        trap 'rm -f "$PATCH_FILE"' EXIT
+        printf '%s\n' "$FIREBASE_PATCH" > "$PATCH_FILE"
+        git apply --check "$PATCH_FILE"
+        git apply "$PATCH_FILE"
+        test -s android/app/google-services.json
+        test -s lib/firebase_options.dart
+        echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
+    - name: Check Android project configuration
+      if: contains(fromJSON('["source","prepare","signing","build","publish"]'), inputs.stage)
+      working-directory: ${{ env.WALLET_DIR }}
+      run: |
+        python3 <<'PY'
+        import json, os, re
+        from pathlib import Path
+        app = Path('android/app/build.gradle').read_text()
+        settings = Path('android/settings.gradle').read_text()
+        expected = [r'compileSdk\s+36\b', r'targetSdkVersion\s+36\b', r'minSdkVersion\s+28\b',
+                    r'ndkVersion\s*=\s*"28\.2\.13676358"', r'applicationId\s+"com\.gleec\.gleecdex"']
+        if not all(re.search(pattern, app) for pattern in expected):
+            raise SystemExit('Android SDK/application settings changed; review toolchain pins for this ref')
+        if not re.search(r'id "com.android.application" version "8\.11\.1"', settings):
+            raise SystemExit('Android Gradle plugin changed; review toolchain compatibility')
+        firebase = json.loads(Path('android/app/google-services.json').read_text())
+        packages = {client['client_info']['android_client_info']['package_name'] for client in firebase['client']}
+        if 'com.gleec.gleecdex' not in packages:
+            raise SystemExit('Firebase config has no matching Android application ID')
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+            summary.write('\nAndroid: com.gleec.gleecdex; min SDK 28; compile/target SDK 36; AGP 8.11.1; NDK 28.2.13676358.\n')
+        PY
+    - name: Fetch locked Flutter packages
+      if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
+      working-directory: ${{ env.WALLET_DIR }}
+      run: |
+        flutter clean
+        flutter pub get --enforce-lockfile
+        git diff --exit-code -- pubspec.lock
+    - name: Generate assets with the web build
+      if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
+      working-directory: ${{ env.WALLET_DIR }}
+      env:
+        GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
+      run: |
+        WEB_LOG=$(mktemp "$RUNNER_TEMP/gleec-web.XXXXXXXX")
+        trap 'rm -f "$WEB_LOG"' EXIT
+        set +e
+        flutter build web --no-pub 2>&1 | tee "$WEB_LOG"
+        RESULTS=("${PIPESTATUS[@]}")
+        set -e
+        test "${RESULTS[1]}" -eq 0
+        if [ "${RESULTS[0]}" -ne 0 ]; then
+          if grep -Fq 'What: Coin assets were updated.' "$WEB_LOG" &&
+             grep -Fq 'Transformer package: komodo_wallet_build_transformer' "$WEB_LOG"; then
+            echo 'Transformer updated coin assets; running the required second web build.'
+            echo 'Web asset generation required one retry after the transformer updated coin assets.' >> "$GITHUB_STEP_SUMMARY"
+            flutter build web --no-pub
+          else
+            exit "${RESULTS[0]}"
+          fi
+        fi
+    - name: Remove isolated Android build and signing files
+      if: always() && inputs.stage != 'diagnostics'
+      run: |
+        if [ -n "${ANDROID_RUN_DIR:-}" ]; then
+          case "$ANDROID_RUN_DIR" in
+            "$RUNNER_TEMP"/gleec-android.*) rm -rf -- "$ANDROID_RUN_DIR" ;;
+            *) echo '::error::Unexpected Android temporary directory'; exit 1 ;;
+          esac
+        fi
+    - name: Remove temporary Flutter SDK
+      if: always() && inputs.stage != 'diagnostics'
+      run: |
+        if [ -n "${FLUTTER_INSTALL_DIR:-}" ]; then
+          case "$FLUTTER_INSTALL_DIR" in
+            "$RUNNER_TEMP"/gleec-flutter.*) rm -rf -- "$FLUTTER_INSTALL_DIR" ;;
+            *) echo '::error::Unexpected Flutter temporary directory'; exit 1 ;;
+          esac
+        fi
+    - name: Remove isolated wallet checkout
+      if: always()
+      run: |
+        EXPECTED_DIR="$GITHUB_WORKSPACE/wallet-android-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+        test "$WALLET_DIR" = "$EXPECTED_DIR"
+        if [ -d "$WALLET_DIR" ]; then rm -rf -- "$WALLET_DIR"; fi
