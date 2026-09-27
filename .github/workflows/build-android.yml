@@ -330,6 +330,36 @@ jobs:
             exit "${RESULTS[0]}"
           fi
         fi
+    - name: Prepare Gradle wrapper from the pinned Flutter SDK
+      if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
+      working-directory: ${{ env.WALLET_DIR }}
+      run: |
+        python3 <<'PY'
+        import os, re, shutil
+        from pathlib import Path
+        android = Path('android')
+        cache = Path(os.environ['FLUTTER_ROOT']) / 'bin/cache/artifacts/gradle_wrapper'
+        properties = android / 'gradle/wrapper/gradle-wrapper.properties'
+        original = properties.read_bytes()
+        if not re.search(rb'^distributionSha256Sum=[0-9a-f]{64}$', original, re.M):
+            raise SystemExit('Gradle distribution must have a pinned SHA-256 in the source project')
+        # Match Flutter GradleUtils.injectGradleWrapperIfNeeded: copy missing files only.
+        for relative in ('gradlew', 'gradlew.bat', 'gradle/wrapper/gradle-wrapper.jar'):
+            target = android / relative
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(cache / relative, target)
+        (android / 'gradlew').chmod(0o755)
+        if properties.read_bytes() != original:
+            raise SystemExit('Gradle distribution settings changed during wrapper preparation')
+        # Direct Gradle validation precedes flutter build, which normally writes these paths.
+        def escape(value):
+            return value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+        (android / 'local.properties').write_text(
+            'sdk.dir=' + escape(os.environ['ANDROID_HOME']) + '\n' +
+            'flutter.sdk=' + escape(os.environ['FLUTTER_ROOT']) + '\n')
+        print('Gradle wrapper installed; original version and distribution checksum preserved')
+        PY
     - name: Verify Android KDF assets and Gradle wrapper
       if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
       working-directory: ${{ env.WALLET_DIR }}
@@ -778,7 +808,7 @@ jobs:
         if hashlib.sha256((verify_dir / package.name).read_bytes()).hexdigest() != digest:
             raise SystemExit('Published Android package checksum differs from the verified artifact')
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-            summary.write(f"### Published Android Android package\n\n[Release {tag}]({release['html_url']})\n\n")
+            summary.write(f"### Published Android package\n\n[Release {tag}]({release['html_url']})\n\n")
             summary.write(f"File: `{package.name}`\n\nSHA-256: `{digest}`\n\n")
             summary.write('Downloaded release asset matches the verified Android package.\n')
         print(f"Published and verified: {release['html_url']}")
