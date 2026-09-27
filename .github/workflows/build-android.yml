@@ -330,36 +330,23 @@ jobs:
             exit "${RESULTS[0]}"
           fi
         fi
-    - name: Prepare Gradle wrapper from the pinned Flutter SDK
+    - name: Generate Android build configuration with Flutter
       if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
       working-directory: ${{ env.WALLET_DIR }}
       run: |
         python3 <<'PY'
-        import os, re, shutil
+        import re
         from pathlib import Path
-        android = Path('android')
-        cache = Path(os.environ['FLUTTER_ROOT']) / 'bin/cache/artifacts/gradle_wrapper'
-        properties = android / 'gradle/wrapper/gradle-wrapper.properties'
-        original = properties.read_bytes()
-        if not re.search(rb'^distributionSha256Sum=[0-9a-f]{64}$', original, re.M):
+        properties = Path('android/gradle/wrapper/gradle-wrapper.properties').read_bytes()
+        if not re.search(rb'^distributionSha256Sum=[0-9a-f]{64}$', properties, re.M):
             raise SystemExit('Gradle distribution must have a pinned SHA-256 in the source project')
-        # Match Flutter GradleUtils.injectGradleWrapperIfNeeded: copy missing files only.
-        for relative in ('gradlew', 'gradlew.bat', 'gradle/wrapper/gradle-wrapper.jar'):
-            target = android / relative
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(cache / relative, target)
-        (android / 'gradlew').chmod(0o755)
-        if properties.read_bytes() != original:
-            raise SystemExit('Gradle distribution settings changed during wrapper preparation')
-        # Direct Gradle validation precedes flutter build, which normally writes these paths.
-        def escape(value):
-            return value.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
-        (android / 'local.properties').write_text(
-            'sdk.dir=' + escape(os.environ['ANDROID_HOME']) + '\n' +
-            'flutter.sdk=' + escape(os.environ['FLUTTER_ROOT']) + '\n')
-        print('Gradle wrapper installed; original version and distribution checksum preserved')
         PY
+        # Flutter prepares wrapper/local.properties for both APK and AAB without compiling.
+        flutter build apk --config-only --release --no-pub --build-number="$BUILD_NUMBER" \
+          --target-platform android-arm,android-arm64
+        test -x android/gradlew
+        test -s android/gradle/wrapper/gradle-wrapper.jar
+        git diff --exit-code -- android/gradle/wrapper/gradle-wrapper.properties
     - name: Verify Android KDF assets and Gradle wrapper
       if: contains(fromJSON('["prepare","signing","build","publish"]'), inputs.stage)
       working-directory: ${{ env.WALLET_DIR }}

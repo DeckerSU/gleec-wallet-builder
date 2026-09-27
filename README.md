@@ -38,7 +38,9 @@ this runner.
 `source` verifies recursive gitlinks, applies `FIREBASE_PATCH` and checks Android
 SDK/application settings. `prepare` fetches locked Dart packages, builds web
 assets, checks both Android KDF static libraries against their provenance, and
-verifies the Gradle wrapper. Toolchain pins target wallet `0.9.7`; changed source
+generates Android build configuration with `flutter build apk --config-only`
+(also for subsequent AAB builds), and verifies the Gradle wrapper without
+changing its source-pinned version/checksum. Toolchain pins target wallet `0.9.7`; changed source
 SDK/AGP requirements cause an explicit failure for review.
 
 `signing` reads these secrets from the `android-signing` environment, restricted
