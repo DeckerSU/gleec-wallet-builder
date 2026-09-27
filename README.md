@@ -5,7 +5,7 @@ desktop releases (Linux, Windows and macOS).
 
 ## Workflow: `Build Gleec Wallet macOS`
 
-Separate macOS workflow under incremental development, running on the
+Separate macOS workflow running on the
 `self-hosted`, `macOS`, `ARM64` runner. Manual dispatch and reruns are restricted
 to the repository owner, from this repository's `main` branch.
 
@@ -31,6 +31,10 @@ Available `stage` inputs:
   keychain, validate/install the matching profile, and sign a small test binary
   without interactive prompts. The keychain search list is restored and temporary
   signing material is removed after the job.
+
+- `sandbox-check`: compare small signed helper programs with legacy signing,
+  hardened runtime, and sandbox inheritance. This diagnostic does not build or
+  launch the wallet; its temporary signing material is removed afterward.
 
 - `build`: run signing preflight, compile `--release --flavor production`, and
   verify the app profile, entitlements, arm64 binaries, Developer ID signatures,
