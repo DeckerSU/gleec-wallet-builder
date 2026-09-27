@@ -16,6 +16,7 @@ on:
           - prepare
           - signing
           - build
+          - notary-auth
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -409,7 +410,7 @@ jobs:
           PY
 
       - name: Install signing identity in a temporary keychain
-        if: contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -498,7 +499,7 @@ jobs:
           rm -f "$SIGNING_DIR/identity.p12"
 
       - name: Verify noninteractive code signing
-        if: contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           printf 'int main(void) { return 0; }\n' > "$SIGNING_DIR/probe.c"
@@ -508,6 +509,21 @@ jobs:
           codesign --verify --strict --verbose=2 "$SIGNING_DIR/probe"
           codesign --display --verbose=4 "$SIGNING_DIR/probe"
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate Apple notarization credentials
+        if: inputs.stage == 'notary-auth'
+        timeout-minutes: 5
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+          xcrun notarytool store-credentials AC_NOTARY_GLEEC \
+            --apple-id "$APPLE_ID" --team-id B52ZCS7TMQ \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --keychain "$SIGNING_KEYCHAIN"
+          echo 'Apple notarization credentials validated; profile AC_NOTARY_GLEEC is stored only in the temporary keychain.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Harden the legacy KDF helper signing phase
         if: inputs.stage == 'build'
@@ -619,7 +635,7 @@ jobs:
           PY
 
       - name: Remove temporary signing material
-        if: always() && contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: always() && contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import json, os, shutil, subprocess

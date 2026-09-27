@@ -35,12 +35,21 @@ Available `stage` inputs:
   verify the app profile, entitlements, arm64 binaries, Developer ID signatures,
   timestamps and hardened runtime. Build service settings come from repository
   secrets; `debug`/`release` select the corresponding Matomo site ID.
+  For the legacy KDF helper signing command in wallet 0.9.7, the temporary
+  checkout adds `--options runtime --timestamp` to the existing Xcode build
+  phase. Signing still happens inside Xcode, before framework embedding; app
+  entitlements are not passed to KDF. Final binary checks remain mandatory.
+
+- `notary-auth`: verify the toolchain/signing setup and validate Apple
+  notarization credentials without rebuilding the wallet. The profile
+  `AC_NOTARY_GLEEC` is created in the temporary keychain and removed afterward.
 
 The `macos-signing` GitHub environment is restricted to `main`. The signing stage
 uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
 `MACOS_PROVISIONING_PROFILE_BASE64` from that environment. Profile installation
 targets Xcode 16+ at `~/Library/Developer/Xcode/UserData/Provisioning Profiles`;
-existing profiles are preserved.
+existing profiles are preserved. Notarization authentication uses environment
+secrets `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` with team `B52ZCS7TMQ`.
 
 Environment setup uses shell commands, without third-party setup actions.
 Flutter is downloaded directly from Google's official Flutter release archive.
