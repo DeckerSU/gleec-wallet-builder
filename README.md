@@ -89,6 +89,12 @@ gh workflow run build-android.yml --repo DeckerSU/gleec-wallet-builder --ref mai
   -f artifact_type=appbundle -f build_number=16
 ```
 
+Both AAB and APK were built, signed and published for wallet `0.9.7`, versionCode
+`16`, with debug service settings. Downloads are in
+[debug_0.9.7](https://github.com/DeckerSU/gleec-wallet-builder/releases/tag/debug_0.9.7).
+APK installation, app startup and KDF operation were also verified manually.
+Retrying only the publish job succeeded without rebuilding the package.
+
 ## Workflow: `Build Gleec Wallet macOS`
 
 Separate macOS workflow running on the
