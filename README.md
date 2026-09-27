@@ -1,7 +1,91 @@
 # gleec-wallet-builder
 
 CI builder for [GLEECBTC/gleec-wallet](https://github.com/GLEECBTC/gleec-wallet)
-desktop releases (Linux, Windows and macOS).
+desktop releases (Linux, Windows and macOS) and Android packages.
+
+## Workflow: `Build Gleec Wallet Android`
+
+Separate manual workflow on the existing `self-hosted`, `macOS`, `ARM64` runner.
+Dispatch and reruns require the repository owner and this repository's `main`
+branch. Android and macOS share a concurrency group to serialize runner work.
+
+Inputs:
+
+| Input | Purpose | Default |
+|---|---|---|
+| `stage` | `diagnostics`, `toolchain`, `source`, `prepare`, `signing`, `build`, or `publish` | `diagnostics` |
+| `ref` | Wallet branch, tag, or commit SHA | `main` |
+| `build_type` | Service settings and GitHub release prefix: `debug` or `release` | `debug` |
+| `artifact_type` | `appbundle` (AAB) or a universal `apk` | `appbundle` |
+| `build_number` | Android `versionCode`; increase for each Google Play upload | `16` |
+
+Both service configurations compile with Flutter `--release` and the supplied
+signing key. They select the same repository secrets as desktop/macOS, including
+Matomo site `3` for debug and `2` for release (unless overridden by the existing
+Matomo secrets). Android does not use the macOS `production` flavor.
+
+Stages are cumulative. `toolchain` installs Temurin Java 17 for Apple Silicon,
+Flutter 3.41.4, Android SDK 35/36, Build Tools 35/36, NDK 27.0/28.2 and CMake 3.22.1.
+Java, Flutter and command-line tools are downloaded directly from their official
+archives with pinned SHA-256 checksums, without third-party setup actions.
+The repository owner has authorized Android SDK license acceptance.
+SDK packages persist in `~/Library/Caches/gleec-wallet-builder/android-sdk`;
+Java, Flutter, Gradle state, source checkouts and signing files are isolated per
+run and removed afterward. The existing system Java and macOS toolchain are
+left intact. Some Google tools require Rosetta, which is already available on
+this runner.
+
+`source` verifies recursive gitlinks, applies `FIREBASE_PATCH` and checks Android
+SDK/application settings. `prepare` fetches locked Dart packages, builds web
+assets, checks both Android KDF static libraries against their provenance, and
+verifies the Gradle wrapper. Toolchain pins target wallet `0.9.7`; changed source
+SDK/AGP requirements cause an explicit failure for review.
+
+`signing` reads these secrets from the `android-signing` environment, restricted
+to `main`:
+
+- `ANDROID_KEYSTORE_BASE64`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
+- `ANDROID_KEYSTORE_TYPE` (`JKS` or `PKCS12`, matching the keystore)
+
+The workflow verifies both passwords and a signing operation with the private
+key. A separate step patches only the isolated wallet checkout: the known
+`signingConfigs.debug` release configuration becomes `signingConfigs.ciRelease`,
+with keystore settings read from environment variables. Unexpected signing
+configurations fail for review; no signing passwords are written into Gradle
+source. Gradle's `validateSigningRelease` must succeed before compilation.
+
+`build` creates the selected format for `armeabi-v7a` and `arm64-v8a`. It verifies
+the signature against the supplied keystore certificate, application ID
+`com.gleec.gleecdex`, requested versionCode, non-debuggable manifest, and native
+Flutter/app/KDF libraries. AAB validation also uses checksum-pinned Google
+bundletool; APK validation uses apksigner, apkanalyzer and zipalign.
+Verbose Flutter output is omitted to avoid exposing encoded service settings;
+encoded Dart defines are masked as well.
+
+The artifact `android-<artifact_type>-<run_id>` contains the signed package,
+SHA-256 file and `android-build.json` provenance, retained for 14 days.
+Filenames are `gleec_wallet_android_<short_sha>_<build_number>.aab` or `.apk`.
+`publish` uploads the package, its `.sha256` and its `.aab.json`/`.apk.json`
+metadata to the same `debug_<safe_id>` or `release_<safe_id>` GitHub release as
+the desktop builds. A separate Ubuntu job validates the artifact and downloads
+the published package to verify its checksum. Existing notes and other assets
+are preserved; matching asset digests are skipped on retries. **Re-run failed
+jobs** can retry publication without rebuilding while the artifact is retained.
+
+This workflow does not upload to Google Play. When using Play App Signing, an
+APK signed with the upload key may have a different certificate from the app
+distributed by Google Play and therefore cannot update that installed app.
+
+Example (signed build artifact, without GitHub publication):
+
+```bash
+gh workflow run build-android.yml --repo DeckerSU/gleec-wallet-builder --ref main \
+  -f stage=build -f ref=0.9.7 -f build_type=debug \
+  -f artifact_type=appbundle -f build_number=16
+```
 
 ## Workflow: `Build Gleec Wallet macOS`
 
