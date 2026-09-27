@@ -19,6 +19,7 @@ on:
           - notary-auth
           - notarize
           - dmg
+          - dmg-check
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -80,7 +81,7 @@ jobs:
           test "$(uname -m)" = arm64
 
       - name: Require Finder automation for DMG packaging
-        if: inputs.stage == 'dmg'
+        if: contains(fromJSON('["dmg","dmg-check"]'), inputs.stage)
         timeout-minutes: 2
         run: |
           test "$(id -u)" = "$(stat -f '%u' /dev/console)" || {
@@ -89,6 +90,48 @@ jobs:
           }
           launchctl print "gui/$(id -u)" >/dev/null
           osascript -e 'tell application "Finder" to get version'
+
+      - name: Check Finder layout on a small temporary image
+        if: inputs.stage == 'dmg-check'
+        timeout-minutes: 3
+        run: |
+          umask 022
+          PACKAGING_DIR=$(mktemp -d /private/tmp/gleec-dmg.XXXXXXXX)
+          export PACKAGING_DIR
+          printf 'PACKAGING_DIR=%s\n' "$PACKAGING_DIR" >> "$GITHUB_ENV"
+          hdiutil create -size 32m -fs HFS+J -volname "Gleec Packaging Check" "$PACKAGING_DIR/probe.dmg"
+          mkdir -p "$PACKAGING_DIR/mnt"
+          hdiutil attach "$PACKAGING_DIR/probe.dmg" -readwrite -nobrowse -noautoopen -mountpoint "$PACKAGING_DIR/mnt"
+          mkdir -p "$PACKAGING_DIR/mnt/Sample.app"
+          ln -s /Applications "$PACKAGING_DIR/mnt/Applications"
+          osascript - "$PACKAGING_DIR/mnt" <<'APPLESCRIPT'
+          on run argv
+            set mpPOSIX to item 1 of argv
+            log "Resolving the mountpoint outside Finder"
+            set mp to (POSIX file mpPOSIX) as alias
+            log "Mountpoint resolved; requesting Finder layout"
+            with timeout of 30 seconds
+              tell application "Finder"
+                activate
+                open mp
+                delay 1
+                set w to window 1
+                set target of w to mp
+                set current view of w to icon view
+                set toolbar visible of w to false
+                set statusbar visible of w to false
+                set bounds of w to {100, 100, 630, 500}
+                set icon size of icon view options of w to 128
+                set position of item "Sample.app" of (folder mp) to {120, 200}
+                set position of item "Applications" of (folder mp) to {400, 200}
+                close w
+              end tell
+            end timeout
+            log "Finder layout completed"
+          end run
+          APPLESCRIPT
+          hdiutil detach "$PACKAGING_DIR/mnt"
+          echo 'Finder resolved the temporary mountpoint and completed the requested icon layout.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Inspect installed tools
         run: |
@@ -145,7 +188,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Install Flutter from the official archive
-        if: inputs.stage != 'diagnostics'
+        if: inputs.stage != 'diagnostics' && inputs.stage != 'dmg-check'
         timeout-minutes: 20
         run: |
           FLUTTER_INSTALL_DIR=$(mktemp -d "$RUNNER_TEMP/gleec-flutter.XXXXXXXX")
@@ -172,7 +215,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify Flutter and download macOS and web artifacts
-        if: inputs.stage != 'diagnostics'
+        if: inputs.stage != 'diagnostics' && inputs.stage != 'dmg-check'
         run: |
           flutter --version --machine > "$RUNNER_TEMP/gleec-flutter-version.json"
           python3 - "$RUNNER_TEMP/gleec-flutter-version.json" <<'PY'
@@ -191,7 +234,7 @@ jobs:
           flutter precache --macos --web
 
       - name: Require full Xcode and working CocoaPods
-        if: inputs.stage != 'diagnostics'
+        if: inputs.stage != 'diagnostics' && inputs.stage != 'dmg-check'
         env:
           REQUESTED_XCODE_PATH: ${{ vars.MACOS_XCODE_PATH }}
         run: |
@@ -717,7 +760,9 @@ jobs:
         env:
           SHORT_SHA: ${{ steps.source.outputs.short_sha }}
         run: |
-          umask 077
+          # Public application files should retain normal read/execute permissions.
+          # mktemp still creates the enclosing private directory with mode 0700.
+          umask 022
           # System temporary storage supports ownership and hdiutil mountpoints.
           PACKAGING_DIR=$(mktemp -d /private/tmp/gleec-dmg.XXXXXXXX)
           export PACKAGING_DIR
@@ -807,7 +852,7 @@ jobs:
           retention-days: 14
 
       - name: Remove DMG mounts and packaging files
-        if: always() && inputs.stage == 'dmg'
+        if: always() && contains(fromJSON('["dmg","dmg-check"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import os, plistlib, shutil, subprocess
@@ -884,7 +929,7 @@ jobs:
           fi
 
       - name: Remove temporary Flutter SDK
-        if: always() && inputs.stage != 'diagnostics'
+        if: always() && inputs.stage != 'diagnostics' && inputs.stage != 'dmg-check'
         run: |
           if [ -n "${FLUTTER_INSTALL_DIR:-}" ]; then
             case "$FLUTTER_INSTALL_DIR" in
