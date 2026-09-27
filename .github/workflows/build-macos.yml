@@ -353,6 +353,51 @@ jobs:
           test -s lib/firebase_options.dart
           echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
 
+      # Temporary backport from SDK PR #395, pinned at b08501c0900086a9f6d562700bb6df785ffb5894.
+      # https://github.com/GLEECBTC/komodo-defi-sdk-flutter/pull/395
+      # Remove after merge and after supported wallet refs include the updated SDK.
+      - name: Apply SDK PR 395 temporary-directory fix if missing
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg","publish"]'), inputs.stage)
+        working-directory: ${{ env.WALLET_DIR }}/sdk
+        run: |
+          PATCH_FILE=$(mktemp "$RUNNER_TEMP/gleec-sdk-pr395.XXXXXXXX")
+          trap 'rm -f "$PATCH_FILE"' EXIT
+          # Keep the reviewed diff in this workflow; never fetch a moving PR at build time.
+          cat > "$PATCH_FILE" <<'PATCH'
+          diff --git a/packages/komodo_defi_framework/lib/src/operations/kdf_operations_local_executable.dart b/packages/komodo_defi_framework/lib/src/operations/kdf_operations_local_executable.dart
+          index 933df833..53f9d4ad 100644
+          --- a/packages/komodo_defi_framework/lib/src/operations/kdf_operations_local_executable.dart
+          +++ b/packages/komodo_defi_framework/lib/src/operations/kdf_operations_local_executable.dart
+          @@ -143,7 +143,12 @@ class KdfOperationsLocalExecutable implements IKdfOperations {
+                 // Store the coins list in a temp file to avoid command line argument and
+                 // environment variable value size limits (varies from 4-128 KB).
+                 // Pass the config directly to the executable as an argument.
+          -      final tempDir = await _temporaryDirectory();
+          +      // path_provider only returns the temporary directory path; on sandboxed
+          +      // macOS it is `Library/Caches/<bundle id>` inside the container, which
+          +      // does not exist on a fresh install, and `createTemp` fails without it.
+          +      final tempDir = await (await _temporaryDirectory()).create(
+          +        recursive: true,
+          +      );
+                 coinsTempDir = await tempDir.createTemp('mm_coins_');
+                 final coinsConfigFile = File(p.join(coinsTempDir.path, 'kdf_coins.json'));
+                 await coinsConfigFile.writeAsString(
+          PATCH
+          if git apply --reverse --check "$PATCH_FILE" >/dev/null 2>&1; then
+            PATCH_STATUS=already-present
+            echo 'SDK PR #395 fix is already present; no patch needed.'
+          elif git apply --check "$PATCH_FILE"; then
+            git apply "$PATCH_FILE"
+            git apply --reverse --check "$PATCH_FILE"
+            PATCH_STATUS=applied
+            echo 'Applied SDK PR #395: create the temporary directory before createTemp.'
+          else
+            echo '::error::SDK PR #395 fix is neither recognizable nor safely applicable. Review the SDK source before building.'
+            exit 1
+          fi
+          printf 'SDK_PR395_PATCH_STATUS=%s\n' "$PATCH_STATUS" >> "$GITHUB_ENV"
+          printf '\nSDK temporary-directory fix [PR #395](https://github.com/GLEECBTC/komodo-defi-sdk-flutter/pull/395): `%s`.\n' "$PATCH_STATUS" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Fetch locked Flutter packages
         if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg","publish"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
@@ -654,6 +699,9 @@ jobs:
             --keychain "$SIGNING_KEYCHAIN"
           echo 'Apple notarization credentials validated; profile AC_NOTARY_GLEEC is stored only in the temporary keychain.' >> "$GITHUB_STEP_SUMMARY"
 
+      # Temporary compatibility fix awaiting wallet PR #3541:
+      # https://github.com/GLEECBTC/gleec-wallet/pull/3541
+      # Remove after merge and after supported wallet refs include the hardened helper phase.
       - name: Harden the legacy KDF helper signing phase
         if: contains(fromJSON('["build","notarize","dmg","publish"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
@@ -884,7 +932,8 @@ jobs:
                       'source_sha': os.environ['SOURCE_SHA'], 'sdk_sha': os.environ['SDK_SHA'],
                       'safe_id': os.environ['SAFE_ID'], 'build_type': os.environ['BUILD_TYPE'],
                       'notary_id': os.environ['NOTARY_ID'], 'notary_status': 'Accepted',
-                      'builder_sha': os.environ['GITHUB_SHA']}
+                      'builder_sha': os.environ['GITHUB_SHA'],
+                      'sdk_pr395_patch': os.environ['SDK_PR395_PATCH_STATUS']}
           (dmg.parent / 'macos-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
           (dmg.parent / (dmg.name + '.sha256')).write_text(f'{checksum}  {dmg.name}\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:

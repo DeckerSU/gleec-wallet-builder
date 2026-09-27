@@ -17,7 +17,8 @@ Available `stage` inputs:
 - `toolchain`: install Flutter 3.41.4 for arm64, download macOS/web artifacts,
   and require full Xcode with completed first launch and CocoaPods 1.16.2.
 - `source`: run the toolchain checks, check out the wallet's requested `ref`,
-  verify pinned recursive submodules, and apply `FIREBASE_PATCH`. The isolated
+  verify pinned recursive submodules, apply `FIREBASE_PATCH`, and backport the
+  SDK temporary-directory fix when missing. The isolated
   checkout is removed after the run. `build_type` defaults to `debug`.
 - `prepare`: run the source checks, fetch locked Flutter packages, install Pods,
   build web assets, and verify generated coin assets and the macOS KDF executable's
@@ -39,6 +40,7 @@ Available `stage` inputs:
   checkout adds `--options runtime --timestamp` to the existing Xcode build
   phase. Signing still happens inside Xcode, before framework embedding; app
   entitlements are not passed to KDF. Final binary checks remain mandatory.
+  This temporary change awaits [wallet PR #3541](https://github.com/GLEECBTC/gleec-wallet/pull/3541).
 
 - `notary-auth`: verify the toolchain/signing setup and validate Apple
   notarization credentials without rebuilding the wallet. The profile
@@ -81,6 +83,19 @@ permission; the workflow cannot approve the macOS dialog itself.
 
 Notarization JSON reports are also retained as artifacts, including on failures
 after submission, so submission IDs remain available for diagnosis.
+
+The separate SDK compatibility step embeds the reviewed patch from
+[SDK PR #395](https://github.com/GLEECBTC/komodo-defi-sdk-flutter/pull/395), pinned
+at `b08501c0900086a9f6d562700bb6df785ffb5894`. It creates the temporary directory
+before `createTemp`, fixing KDF startup on a fresh sandboxed macOS installation.
+The step checks whether the patch is already present before applying it; an
+unrecognized source version fails with an explicit error. It never downloads
+the current PR diff during a build. The summary and DMG manifest record whether
+the patch was applied or already present.
+
+Remove this SDK backport and the temporary helper-signing adjustment once their
+respective PRs are merged **and the wallet refs being built include the fixes**.
+Old tags such as `0.9.7` keep their original SDK commit and still need the backport.
 
 The `macos-signing` GitHub environment is restricted to `main`. The signing stage
 uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
