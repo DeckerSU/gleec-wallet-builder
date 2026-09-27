@@ -15,6 +15,7 @@ on:
           - source
           - prepare
           - signing
+          - sandbox-check
           - build
           - notary-auth
           - notarize
@@ -467,7 +468,7 @@ jobs:
           PY
 
       - name: Install signing identity in a temporary keychain
-        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish","sandbox-check"]'), inputs.stage)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -556,7 +557,7 @@ jobs:
           rm -f "$SIGNING_DIR/identity.p12"
 
       - name: Verify noninteractive code signing
-        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish","sandbox-check"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           printf 'int main(void) { return 0; }\n' > "$SIGNING_DIR/probe.c"
@@ -566,6 +567,77 @@ jobs:
           codesign --verify --strict --verbose=2 "$SIGNING_DIR/probe"
           codesign --display --verbose=4 "$SIGNING_DIR/probe"
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Compare helper runtime and sandbox inheritance
+        if: inputs.stage == 'sandbox-check'
+        timeout-minutes: 5
+        run: |
+          python3 <<'PY'
+          import json, os, plistlib, subprocess
+          from pathlib import Path
+          root = Path(os.environ['SIGNING_DIR']) / 'sandbox-probe'
+          root.mkdir()
+          (root / 'helper.c').write_text('int main(void) { return 42; }\n')
+          (root / 'parent.c').write_text(r'''
+          #include <spawn.h>
+          #include <sys/wait.h>
+          #include <stdio.h>
+          #include <errno.h>
+          extern char **environ;
+          static int run(char *path, char **args) {
+            pid_t pid; int status;
+            int error = posix_spawn(&pid, path, NULL, NULL, args, environ);
+            if (error) return -error;
+            if (waitpid(pid, &status, 0) < 0) return -errno;
+            if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -999;
+          }
+          int main(int argc, char **argv) {
+            if (argc != 2) return 64;
+            char *chmod_args[] = {"/bin/chmod", "+x", argv[1], NULL};
+            int chmod_result = run(chmod_args[0], chmod_args);
+            char *helper_args[] = {argv[1], NULL};
+            int helper_result = run(helper_args[0], helper_args);
+            printf("{\"chmod_result\":%d,\"helper_result\":%d}\n", chmod_result, helper_result);
+            return 0;
+          }
+          ''')
+          parent_entitlements = root / 'parent.plist'
+          parent_entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox': True}))
+          helper_entitlements = root / 'helper.plist'
+          helper_entitlements.write_bytes(plistlib.dumps({'com.apple.security.app-sandbox': True,
+                                                         'com.apple.security.inherit': True}))
+          sign = ['codesign', '--force', '--timestamp', '--sign', os.environ['SIGNING_IDENTITY'],
+                  '--keychain', os.environ['SIGNING_KEYCHAIN']]
+          results = {}
+          for mode in ('legacy', 'runtime-only', 'runtime-inherit'):
+              app = root / (mode + '.app')
+              macos = app / 'Contents/MacOS'
+              macos.mkdir(parents=True)
+              info = {'CFBundleIdentifier': 'com.GleecDEX.sandbox-probe.' + mode,
+                      'CFBundleExecutable': 'parent', 'CFBundlePackageType': 'APPL',
+                      'CFBundleName': 'Sandbox Probe', 'CFBundleVersion': '1'}
+              (app / 'Contents/Info.plist').write_bytes(plistlib.dumps(info))
+              for name in ('parent', 'helper'):
+                  subprocess.run(['xcrun', 'clang', '-arch', 'arm64', str(root / (name + '.c')),
+                                  '-o', str(macos / name)], check=True)
+              flags = [] if mode == 'legacy' else ['--options', 'runtime']
+              if mode == 'runtime-inherit':
+                  flags += ['--entitlements', str(helper_entitlements)]
+              subprocess.run(sign + flags + [str(macos / 'helper')], check=True)
+              subprocess.run(sign + ['--options', 'runtime', '--entitlements', str(parent_entitlements), str(app)], check=True)
+              subprocess.run(['codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+              result = subprocess.run([str(macos / 'parent'), str(macos / 'helper')],
+                                      text=True, capture_output=True, timeout=30)
+              print(f'{mode}: parent_exit={result.returncode}, stdout={result.stdout.strip()}, stderr={result.stderr.strip()}')
+              results[mode] = {'parent_exit': result.returncode, 'stdout': result.stdout.strip(),
+                               'stderr': result.stderr.strip()}
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('\n### Sandbox helper comparison\n\n```json\n' + json.dumps(results, indent=2) + '\n```\n')
+          fixed = results['runtime-inherit']
+          if fixed['parent_exit'] or json.loads(fixed['stdout'])['helper_result'] != 42:
+              raise SystemExit('Sandbox inheritance probe did not complete successfully')
+          PY
 
       - name: Validate Apple notarization credentials
         if: contains(fromJSON('["notary-auth","notarize","dmg","publish"]'), inputs.stage)
@@ -884,7 +956,7 @@ jobs:
           rm -rf -- "$REPORT_DIR"
 
       - name: Remove temporary signing material
-        if: always() && contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish"]'), inputs.stage)
+        if: always() && contains(fromJSON('["signing","build","notary-auth","notarize","dmg","publish","sandbox-check"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import json, os, shutil, subprocess
