@@ -44,6 +44,11 @@ Available `stage` inputs:
   notarization credentials without rebuilding the wallet. The profile
   `AC_NOTARY_GLEEC` is created in the temporary keychain and removed afterward.
 
+- `notarize`: build and verify the app, submit a ZIP to Apple, require
+  `Accepted`, staple the ticket, and validate it with stapler and Gatekeeper.
+  The submission ID is recorded in the job summary before waiting. A timeout
+  queries the same submission and never automatically uploads another copy.
+
 The `macos-signing` GitHub environment is restricted to `main`. The signing stage
 uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
 `MACOS_PROVISIONING_PROFILE_BASE64` from that environment. Profile installation
@@ -63,8 +68,8 @@ workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
 repository variable `MACOS_XCODE_PATH` to use a different developer directory.
 It does not change the system-wide Xcode selection or accept licenses.
 
-Results appear in the run's job summary and logs. Notarization, DMG
-packaging, and release publication will be added after the prerequisite stages
+Results appear in the run's job summary and logs. DMG packaging
+and release publication will be added after the prerequisite stages
 pass on the runner.
 
 ## Workflow: `Build Gleec Wallet Desktop`

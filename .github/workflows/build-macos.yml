@@ -17,6 +17,7 @@ on:
           - signing
           - build
           - notary-auth
+          - notarize
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -229,7 +230,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout wallet source
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: GLEECBTC/gleec-wallet
@@ -239,7 +240,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify source and pinned submodules
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         id: source
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -279,7 +280,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Apply Firebase production config patch
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
@@ -296,7 +297,7 @@ jobs:
           echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch locked Flutter packages
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           flutter clean
@@ -304,7 +305,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
 
       - name: Generate macOS Pods project
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}/macos
         run: |
           pod deintegrate
@@ -339,7 +340,7 @@ jobs:
           RUBY
 
       - name: Generate assets with the web build
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
@@ -363,7 +364,7 @@ jobs:
           fi
 
       - name: Verify macOS KDF and generated assets
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           python3 <<'PY'
@@ -410,7 +411,7 @@ jobs:
           PY
 
       - name: Install signing identity in a temporary keychain
-        if: contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -499,7 +500,7 @@ jobs:
           rm -f "$SIGNING_DIR/identity.p12"
 
       - name: Verify noninteractive code signing
-        if: contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           printf 'int main(void) { return 0; }\n' > "$SIGNING_DIR/probe.c"
@@ -511,7 +512,7 @@ jobs:
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Apple notarization credentials
-        if: inputs.stage == 'notary-auth'
+        if: contains(fromJSON('["notary-auth","notarize"]'), inputs.stage)
         timeout-minutes: 5
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -526,7 +527,7 @@ jobs:
           echo 'Apple notarization credentials validated; profile AC_NOTARY_GLEEC is stored only in the temporary keychain.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Harden the legacy KDF helper signing phase
-        if: inputs.stage == 'build'
+        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           python3 <<'PY'
@@ -545,7 +546,7 @@ jobs:
           PY
 
       - name: Build signed macOS application
-        if: inputs.stage == 'build'
+        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
         timeout-minutes: 45
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -582,7 +583,7 @@ jobs:
           printf '\nmacOS release compilation completed; service configuration: `%s`.\n' "$BUILD_TYPE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify app identity, entitlements and nested signatures
-        if: inputs.stage == 'build'
+        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
         run: |
           codesign --verify --deep --strict --verbose=2 "$APP"
           python3 <<'PY'
@@ -634,8 +635,71 @@ jobs:
               summary.write(f'\nVerified app profile/entitlements and {len(binaries)} arm64-compatible Developer ID signed binaries with timestamps.\n')
           PY
 
+      - name: Submit app to Apple notarization
+        if: inputs.stage == 'notarize'
+        timeout-minutes: 15
+        run: |
+          ditto -c -k --keepParent "$APP" "$SIGNING_DIR/GleecDEX.zip"
+          xcrun notarytool submit "$SIGNING_DIR/GleecDEX.zip" \
+            --keychain-profile AC_NOTARY_GLEEC --keychain "$SIGNING_KEYCHAIN" \
+            --output-format json > "$SIGNING_DIR/notary-submission.json"
+          python3 <<'PY'
+          import json, os, uuid
+          from pathlib import Path
+          data = json.loads((Path(os.environ['SIGNING_DIR']) / 'notary-submission.json').read_text())
+          submission_id = str(uuid.UUID(data['id']))
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write(f'NOTARY_ID={submission_id}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'\n### Apple notarization\n\nSubmission ID: `{submission_id}`\n')
+          print(f'Apple submission ID: {submission_id}')
+          PY
+
+      - name: Require Apple Accepted status
+        if: inputs.stage == 'notarize'
+        timeout-minutes: 25
+        run: |
+          # A timeout never triggers another upload. Query the same submission ID.
+          if ! xcrun notarytool wait "$NOTARY_ID" --timeout 20m \
+            --keychain-profile AC_NOTARY_GLEEC --keychain "$SIGNING_KEYCHAIN" \
+            --output-format json > "$SIGNING_DIR/notary-result.json"; then
+            xcrun notarytool info "$NOTARY_ID" \
+              --keychain-profile AC_NOTARY_GLEEC --keychain "$SIGNING_KEYCHAIN" \
+              --output-format json > "$SIGNING_DIR/notary-result.json"
+          fi
+          python3 <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          root = Path(os.environ['SIGNING_DIR'])
+          result = json.loads((root / 'notary-result.json').read_text())
+          status = result.get('status', 'Unknown')
+          print(f'Apple notarization status: {status}')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'\nApple status: `{status}`\n')
+          if status in ('Accepted', 'Invalid', 'Rejected'):
+              log_path = root / 'notary-log.json'
+              subprocess.run(['xcrun', 'notarytool', 'log', os.environ['NOTARY_ID'],
+                              '--keychain-profile', 'AC_NOTARY_GLEEC', '--keychain', os.environ['SIGNING_KEYCHAIN'],
+                              str(log_path)], check=True)
+              log = json.loads(log_path.read_text())
+              for issue in log.get('issues') or []:
+                  print(f"{issue.get('severity')}: {issue.get('path')}: {issue.get('message')}")
+          if status != 'Accepted':
+              raise SystemExit('Notarization was not Accepted. Inspect the recorded submission ID before retrying; no stapling or publication is permitted.')
+          PY
+
+      - name: Staple app and verify Gatekeeper assessment
+        if: inputs.stage == 'notarize'
+        timeout-minutes: 5
+        run: |
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl --assess --type execute -vv "$APP"
+          echo 'Apple Accepted; app ticket stapled and validated; Gatekeeper execute assessment passed.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Remove temporary signing material
-        if: always() && contains(fromJSON('["signing","build","notary-auth"]'), inputs.stage)
+        if: always() && contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import json, os, shutil, subprocess
@@ -675,7 +739,7 @@ jobs:
           PY
 
       - name: Remove temporary wallet checkout
-        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build"]'), inputs.stage))
+        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage))
         run: |
           EXPECTED_DIR="$GITHUB_WORKSPACE/wallet-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test "$WALLET_DIR" = "$EXPECTED_DIR"
