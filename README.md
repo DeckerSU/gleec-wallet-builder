@@ -1,7 +1,7 @@
 # gleec-wallet-builder
 
 CI builder for [GLEECBTC/gleec-wallet](https://github.com/GLEECBTC/gleec-wallet)
-desktop releases (Linux + Windows).
+desktop releases (Linux, Windows and macOS).
 
 ## Workflow: `Build Gleec Wallet macOS`
 
@@ -56,6 +56,29 @@ Available `stage` inputs:
   uploaded as a 14-day artifact. An already-mounted image with the same volume
   name causes a failure; the workflow never forcibly detaches that volume.
 
+- `dmg-check`: test Finder window layout on a small temporary disk image without
+  installing Flutter, building the wallet or accessing signing secrets. Use this
+  to check GUI permissions before a full build.
+
+- `publish`: run the full DMG build, then publish from a separate Ubuntu job with
+  release write access. It verifies the artifact manifest and checksum, uploads
+  the DMG plus its `.sha256` and `.json` metadata, and downloads the published
+  DMG to verify its checksum again. Existing release notes and other platform
+  assets are preserved. Only the explicitly named macOS assets can be replaced.
+
+`dmg` and `publish` include the small Finder layout probe before installing Flutter.
+Both `debug` and `release` use Flutter release compilation and Developer ID signing;
+the selected service configuration also determines `debug_<safe_id>` (prerelease)
+or `release_<safe_id>` (regular release). As in the desktop workflow, `safe_id`
+is the sanitized wallet tag when `ref` names a tag, otherwise its short commit SHA.
+The DMG filename always uses the wallet commit: `gleecdex_macos_<short_sha>.dmg`.
+
+DMG layout requires a logged-in GUI session for the runner user. When macOS asks
+whether Terminal may control Finder, click **Allow** on the Mac. For a runner
+started from Terminal, the permission is under **System Settings → Privacy &
+Security → Automation → Terminal → Finder**. Run `dmg-check` once to confirm the
+permission; the workflow cannot approve the macOS dialog itself.
+
 Notarization JSON reports are also retained as artifacts, including on failures
 after submission, so submission IDs remain available for diagnosis.
 
@@ -78,8 +101,17 @@ workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
 repository variable `MACOS_XCODE_PATH` to use a different developer directory.
 It does not change the system-wide Xcode selection or accept licenses.
 
-Results appear in the run's job summary, logs and artifacts. Release publication
-will be added after DMG packaging passes on the runner.
+Results appear in the run's job summary, logs and artifacts. For a complete build
+and publication, choose `stage=publish`, the wallet `ref`, and `build_type`:
+
+```bash
+gh workflow run build-macos.yml --repo DeckerSU/gleec-wallet-builder --ref main \
+  -f stage=publish -f ref=0.9.7 -f build_type=release
+```
+
+If only publication fails, use **Re-run failed jobs** while the DMG artifact is
+still retained (14 days). The artifact name is stable across attempts of that
+run, so publication can retry without rebuilding or resubmitting to Apple.
 
 ## Workflow: `Build Gleec Wallet Desktop`
 
