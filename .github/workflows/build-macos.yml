@@ -18,6 +18,7 @@ on:
           - build
           - notary-auth
           - notarize
+          - dmg
         default: diagnostics
       ref:
         description: "gleec-wallet ref to build (commit SHA, branch, or tag)"
@@ -77,6 +78,17 @@ jobs:
           test "$RUNNER_OS" = macOS
           test "$RUNNER_ARCH" = ARM64
           test "$(uname -m)" = arm64
+
+      - name: Require Finder automation for DMG packaging
+        if: inputs.stage == 'dmg'
+        timeout-minutes: 2
+        run: |
+          test "$(id -u)" = "$(stat -f '%u' /dev/console)" || {
+            echo '::error::The runner user must have an active macOS console session for Finder packaging.'
+            exit 1
+          }
+          launchctl print "gui/$(id -u)" >/dev/null
+          osascript -e 'tell application "Finder" to get version'
 
       - name: Inspect installed tools
         run: |
@@ -230,7 +242,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout wallet source
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: GLEECBTC/gleec-wallet
@@ -240,7 +252,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify source and pinned submodules
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         id: source
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -280,7 +292,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Apply Firebase production config patch
-        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           FIREBASE_PATCH: ${{ secrets.FIREBASE_PATCH }}
@@ -297,7 +309,7 @@ jobs:
           echo 'Firebase patch applied successfully (contents omitted).' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Fetch locked Flutter packages
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           flutter clean
@@ -305,7 +317,7 @@ jobs:
           git diff --exit-code -- pubspec.lock
 
       - name: Generate macOS Pods project
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}/macos
         run: |
           pod deintegrate
@@ -340,7 +352,7 @@ jobs:
           RUBY
 
       - name: Generate assets with the web build
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         env:
           GITHUB_API_PUBLIC_READONLY_TOKEN: ${{ secrets.GH_API_PUBLIC_READONLY_TOKEN || github.token }}
@@ -364,7 +376,7 @@ jobs:
           fi
 
       - name: Verify macOS KDF and generated assets
-        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage)
+        if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           python3 <<'PY'
@@ -411,7 +423,7 @@ jobs:
           PY
 
       - name: Install signing identity in a temporary keychain
-        if: contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg"]'), inputs.stage)
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -500,7 +512,7 @@ jobs:
           rm -f "$SIGNING_DIR/identity.p12"
 
       - name: Verify noninteractive code signing
-        if: contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["signing","build","notary-auth","notarize","dmg"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           printf 'int main(void) { return 0; }\n' > "$SIGNING_DIR/probe.c"
@@ -512,7 +524,7 @@ jobs:
           echo 'Developer ID test signature verified without an interactive keychain prompt.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Apple notarization credentials
-        if: contains(fromJSON('["notary-auth","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["notary-auth","notarize","dmg"]'), inputs.stage)
         timeout-minutes: 5
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -527,7 +539,7 @@ jobs:
           echo 'Apple notarization credentials validated; profile AC_NOTARY_GLEEC is stored only in the temporary keychain.' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Harden the legacy KDF helper signing phase
-        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["build","notarize","dmg"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}
         run: |
           python3 <<'PY'
@@ -546,7 +558,7 @@ jobs:
           PY
 
       - name: Build signed macOS application
-        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["build","notarize","dmg"]'), inputs.stage)
         timeout-minutes: 45
         working-directory: ${{ env.WALLET_DIR }}
         env:
@@ -583,7 +595,7 @@ jobs:
           printf '\nmacOS release compilation completed; service configuration: `%s`.\n' "$BUILD_TYPE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify app identity, entitlements and nested signatures
-        if: contains(fromJSON('["build","notarize"]'), inputs.stage)
+        if: contains(fromJSON('["build","notarize","dmg"]'), inputs.stage)
         run: |
           codesign --verify --deep --strict --verbose=2 "$APP"
           python3 <<'PY'
@@ -636,7 +648,7 @@ jobs:
           PY
 
       - name: Submit app to Apple notarization
-        if: inputs.stage == 'notarize'
+        if: contains(fromJSON('["notarize","dmg"]'), inputs.stage)
         timeout-minutes: 15
         run: |
           ditto -c -k --keepParent "$APP" "$SIGNING_DIR/GleecDEX.zip"
@@ -656,7 +668,7 @@ jobs:
           PY
 
       - name: Require Apple Accepted status
-        if: inputs.stage == 'notarize'
+        if: contains(fromJSON('["notarize","dmg"]'), inputs.stage)
         timeout-minutes: 25
         run: |
           # A timeout never triggers another upload. Query the same submission ID.
@@ -689,7 +701,7 @@ jobs:
           PY
 
       - name: Staple app and verify Gatekeeper assessment
-        if: inputs.stage == 'notarize'
+        if: contains(fromJSON('["notarize","dmg"]'), inputs.stage)
         timeout-minutes: 5
         run: |
           xcrun stapler staple "$APP"
@@ -698,8 +710,132 @@ jobs:
           spctl --assess --type execute -vv "$APP"
           echo 'Apple Accepted; app ticket stapled and validated; Gatekeeper execute assessment passed.' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Package the stapled app as DMG
+        if: inputs.stage == 'dmg'
+        timeout-minutes: 15
+        working-directory: ${{ env.WALLET_DIR }}
+        env:
+          SHORT_SHA: ${{ steps.source.outputs.short_sha }}
+        run: |
+          umask 077
+          # System temporary storage supports ownership and hdiutil mountpoints.
+          PACKAGING_DIR=$(mktemp -d /private/tmp/gleec-dmg.XXXXXXXX)
+          export PACKAGING_DIR
+          printf 'PACKAGING_DIR=%s\n' "$PACKAGING_DIR" >> "$GITHUB_ENV"
+          python3 <<'PY'
+          from pathlib import Path
+          script = Path('contrib/make-dmg.sh')
+          content = script.read_text()
+          old = '  hdiutil detach "/Volumes/${VOL}" -force -quiet || true'
+          new = '  echo "ERROR: /Volumes/${VOL} is already in use; close that image before packaging." >&2; exit 1'
+          if content.count(old) != 1:
+              raise SystemExit('DMG script changed: review its existing-volume handling before running it')
+          script.write_text(content.replace(old, new))
+          PY
+          TMPROOT="$PACKAGING_DIR/work" ./contrib/make-dmg.sh
+          DMG_PATH="$WALLET_DIR/dist/gleecdex_macos_$SHORT_SHA.dmg"
+          cp ./dist/GleecDEX.dmg "$DMG_PATH"
+          printf 'DMG_PATH=%s\n' "$DMG_PATH" >> "$GITHUB_ENV"
+          hdiutil verify "$DMG_PATH"
+
+      - name: Verify app and ticket inside the finished DMG
+        if: inputs.stage == 'dmg'
+        timeout-minutes: 5
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.commit_sha }}
+          SDK_SHA: ${{ steps.source.outputs.sdk_sha }}
+          SAFE_ID: ${{ steps.source.outputs.safe_id }}
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          MOUNT_POINT="$PACKAGING_DIR/verify"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach "$DMG_PATH" -readonly -nobrowse -noautoopen -mountpoint "$MOUNT_POINT"
+          test "$(readlink "$MOUNT_POINT/Applications")" = /Applications
+          codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Gleec DEX.app"
+          xcrun stapler validate "$MOUNT_POINT/Gleec DEX.app"
+          spctl --assess --type execute -vv "$MOUNT_POINT/Gleec DEX.app"
+          hdiutil detach "$MOUNT_POINT"
+          python3 <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          dmg = Path(os.environ['DMG_PATH'])
+          checksum = hashlib.sha256(dmg.read_bytes()).hexdigest()
+          manifest = {'file': dmg.name, 'sha256': checksum,
+                      'source_sha': os.environ['SOURCE_SHA'], 'sdk_sha': os.environ['SDK_SHA'],
+                      'safe_id': os.environ['SAFE_ID'], 'build_type': os.environ['BUILD_TYPE'],
+                      'notary_id': os.environ['NOTARY_ID'], 'notary_status': 'Accepted',
+                      'builder_sha': os.environ['GITHUB_SHA']}
+          (dmg.parent / 'macos-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          (dmg.parent / (dmg.name + '.sha256')).write_text(f'{checksum}  {dmg.name}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'\n### Verified DMG\n\nFile: `{dmg.name}`\n\nSHA-256: `{checksum}`\n\n')
+              summary.write('Readonly mount, Applications shortcut, nested app signature, stapled ticket and Gatekeeper assessment passed.\n')
+          PY
+
+      - name: Upload verified DMG artifact
+        if: inputs.stage == 'dmg'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-dmg-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.DMG_PATH }}
+            ${{ env.DMG_PATH }}.sha256
+            ${{ env.WALLET_DIR }}/dist/macos-build.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Collect notarization report
+        if: always() && env.NOTARY_ID != ''
+        run: |
+          REPORT_DIR="$RUNNER_TEMP/gleec-notary-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          printf 'REPORT_DIR=%s\n' "$REPORT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$REPORT_DIR"
+          for NAME in notary-submission.json notary-result.json notary-log.json; do
+            if [ -s "$SIGNING_DIR/$NAME" ]; then
+              cp "$SIGNING_DIR/$NAME" "$REPORT_DIR/$NAME"
+            fi
+          done
+
+      - name: Upload notarization report
+        if: always() && env.REPORT_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-notarization-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REPORT_DIR }}/*.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove DMG mounts and packaging files
+        if: always() && inputs.stage == 'dmg'
+        run: |
+          python3 <<'PY'
+          import os, plistlib, shutil, subprocess
+          from pathlib import Path
+          directory = os.environ.get('PACKAGING_DIR')
+          if not directory:
+              raise SystemExit(0)
+          root = Path(directory)
+          if root.parent != Path('/private/tmp') or not root.name.startswith('gleec-dmg.'):
+              raise SystemExit('Unexpected DMG cleanup directory')
+          images = plistlib.loads(subprocess.check_output(['hdiutil', 'info', '-plist']))
+          for image in images.get('images', []):
+              for entity in image.get('system-entities', []):
+                  mount = entity.get('mount-point')
+                  if mount and str(mount).startswith(str(root) + '/'):
+                      subprocess.run(['hdiutil', 'detach', mount], check=True)
+          shutil.rmtree(root)
+          print('Run-owned DMG mounts detached and packaging files removed.')
+          PY
+
+      - name: Remove local notarization report
+        if: always() && env.REPORT_DIR != ''
+        run: |
+          test "$REPORT_DIR" = "$RUNNER_TEMP/gleec-notary-report-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf -- "$REPORT_DIR"
+
       - name: Remove temporary signing material
-        if: always() && contains(fromJSON('["signing","build","notary-auth","notarize"]'), inputs.stage)
+        if: always() && contains(fromJSON('["signing","build","notary-auth","notarize","dmg"]'), inputs.stage)
         run: |
           python3 <<'PY'
           import json, os, shutil, subprocess
@@ -739,7 +875,7 @@ jobs:
           PY
 
       - name: Remove temporary wallet checkout
-        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize"]'), inputs.stage))
+        if: always() && (inputs.stage == 'source' || inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg"]'), inputs.stage))
         run: |
           EXPECTED_DIR="$GITHUB_WORKSPACE/wallet-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           test "$WALLET_DIR" = "$EXPECTED_DIR"

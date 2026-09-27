@@ -49,6 +49,16 @@ Available `stage` inputs:
   The submission ID is recorded in the job summary before waiting. A timeout
   queries the same submission and never automatically uploads another copy.
 
+- `dmg`: first require a console session and Finder automation, then build and
+  notarize the app and run the wallet's `contrib/make-dmg.sh`. The completed image
+  is mounted readonly to verify its app signature, stapled ticket, Gatekeeper
+  assessment and Applications shortcut. The DMG, SHA-256 and build manifest are
+  uploaded as a 14-day artifact. An already-mounted image with the same volume
+  name causes a failure; the workflow never forcibly detaches that volume.
+
+Notarization JSON reports are also retained as artifacts, including on failures
+after submission, so submission IDs remain available for diagnosis.
+
 The `macos-signing` GitHub environment is restricted to `main`. The signing stage
 uses `MACOS_CERTIFICATE_P12_BASE64`, `MACOS_CERTIFICATE_PASSWORD`, and
 `MACOS_PROVISIONING_PROFILE_BASE64` from that environment. Profile installation
@@ -68,9 +78,8 @@ workflow uses `/Applications/Xcode.app/Contents/Developer` by default; set the
 repository variable `MACOS_XCODE_PATH` to use a different developer directory.
 It does not change the system-wide Xcode selection or accept licenses.
 
-Results appear in the run's job summary and logs. DMG packaging
-and release publication will be added after the prerequisite stages
-pass on the runner.
+Results appear in the run's job summary, logs and artifacts. Release publication
+will be added after DMG packaging passes on the runner.
 
 ## Workflow: `Build Gleec Wallet Desktop`
 
