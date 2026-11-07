@@ -117,6 +117,8 @@ Available `stage` inputs:
   arm64 support. Dependency version/source changes fail the run; checksum-only
   changes for local Flutter plugin podspecs are recorded and allowed after Dart
   packages have passed `pub get --enforce-lockfile`.
+  CocoaPods CDN downloads currently run with concurrency limited to one to
+  investigate HTTP/2 failures on the Mac runner.
   Pod installation logs include verbose CocoaPods output. On failure, the same
   step reports DNS, curl/Ruby HTTP library versions, and bounded HTTP/1.1,
   HTTP/2 and Ruby HTTP probes against the CocoaPods index and failed public CDN

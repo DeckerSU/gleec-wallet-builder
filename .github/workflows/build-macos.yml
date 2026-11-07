@@ -409,7 +409,11 @@ jobs:
       - name: Generate macOS Pods project
         if: inputs.stage == 'prepare' || contains(fromJSON('["signing","build","notarize","dmg","publish"]'), inputs.stage)
         working-directory: ${{ env.WALLET_DIR }}/macos
+        env:
+          # Diagnose HTTP/2 CDN failures with serialized CocoaPods downloads.
+          COCOAPODS_CDN_MAX_CONCURRENCY: "1"
         run: |
+          printf 'CocoaPods CDN max concurrency: %s\n' "$COCOAPODS_CDN_MAX_CONCURRENCY"
           pod deintegrate
           # Refresh spec metadata while retaining locked dependency versions.
           POD_LOG=$(mktemp "$RUNNER_TEMP/gleec-pod-install.XXXXXXXX")
