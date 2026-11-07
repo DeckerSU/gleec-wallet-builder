@@ -117,6 +117,11 @@ Available `stage` inputs:
   arm64 support. Dependency version/source changes fail the run; checksum-only
   changes for local Flutter plugin podspecs are recorded and allowed after Dart
   packages have passed `pub get --enforce-lockfile`.
+  Pod installation logs include verbose CocoaPods output. On failure, the same
+  step reports DNS, curl/Ruby HTTP library versions, and bounded HTTP/1.1,
+  HTTP/2 and Ruby HTTP probes against the CocoaPods index and failed public CDN
+  URLs. Proxy/certificate environment variables are reported as set/unset only;
+  diagnostics preserve the original installation failure.
   The web build retries once for the transformer's explicit "Coin assets were
   updated" signal; all other failures stop preparation.
 - `signing`: run preparation, import the Developer ID identity into a temporary

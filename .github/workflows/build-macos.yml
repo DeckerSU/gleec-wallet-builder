@@ -412,7 +412,77 @@ jobs:
         run: |
           pod deintegrate
           # Refresh spec metadata while retaining locked dependency versions.
-          pod install --repo-update
+          POD_LOG=$(mktemp "$RUNNER_TEMP/gleec-pod-install.XXXXXXXX")
+          trap 'rm -f "$POD_LOG"' EXIT
+          set +e
+          pod install --repo-update --verbose --no-ansi 2>&1 | tee "$POD_LOG"
+          POD_RESULTS=("${PIPESTATUS[@]}")
+          set -e
+          if [ "${POD_RESULTS[0]}" -ne 0 ]; then
+            printf '\n### CocoaPods installation failed\n\n`pod install` exit code: `%s`. See the network diagnostics in the **Generate macOS Pods project** log.\n' "${POD_RESULTS[0]}" >> "$GITHUB_STEP_SUMMARY"
+            # Best-effort probes must not replace the original pod exit status.
+            python3 - "$POD_LOG" <<'PY' || echo '::warning::CocoaPods diagnostics could not complete.'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def probe(label, command, timeout=30):
+              print(f'::group::{label}', flush=True)
+              try:
+                  result = subprocess.run(command, timeout=timeout, check=False)
+                  print(f'Probe exit code: {result.returncode}', flush=True)
+              except (OSError, subprocess.TimeoutExpired) as error:
+                  print(f'Probe unavailable or timed out: {error}', flush=True)
+              finally:
+                  print('::endgroup::', flush=True)
+
+          probe('curl version and supported protocols', ['curl', '--disable', '--version'])
+          probe('Ruby and CocoaPods HTTP libraries', ['ruby', '-r', 'cocoapods', '-r', 'typhoeus', '-e', '''
+          puts RUBY_DESCRIPTION
+          %w[cocoapods cocoapods-core typhoeus ethon ffi].each do |name|
+            spec = Gem.loaded_specs[name]
+            puts "#{name}: #{spec ? spec.version : 'not loaded'}"
+          end
+          puts "Ruby HTTP backend: #{Ethon::Curl.version}"
+          '''])
+          # Report presence only: proxy URLs and certificate paths may be private.
+          for name in ('http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+                       'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                       'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE'):
+              print(f'{name}: {"set" if os.environ.get(name) else "unset"}', flush=True)
+          for host in ('cdn.cocoapods.org', 'cdn.jsdelivr.net'):
+              probe(f'DNS lookup: {host}', ['dscacheutil', '-q', 'host', '-a', 'name', host], timeout=10)
+
+          log = Path(sys.argv[1]).read_text(errors='replace')
+          # Only probe public CocoaPods spec paths, without credentials or queries.
+          failed_urls = re.findall(
+              r"URL couldn't be downloaded: (https://(?:cdn\.jsdelivr\.net/cocoa|cdn\.cocoapods\.org)/[A-Za-z0-9_./+-]+)", log)
+          urls = ['https://cdn.cocoapods.org/CocoaPods-version.yml']
+          urls.extend(list(dict.fromkeys(failed_urls))[:2])
+          if not failed_urls:
+              print('No public CDN failure URL found; probing the CocoaPods index only.', flush=True)
+          for url in urls:
+              for protocol in ('--http1.1', '--http2'):
+                  probe(f'CDN GET {protocol}: {url}', [
+                      'curl', '--disable', protocol, '--silent', '--show-error', '--fail',
+                      '--location', '--max-redirs', '5', '--proto', '=https', '--proto-redir', '=https',
+                      '--connect-timeout', '8', '--max-time', '20', '--output', '/dev/null',
+                      '--write-out', '\nhttp=%{http_code} protocol=%{http_version} remote_ip=%{remote_ip}'
+                      ' redirects=%{num_redirects} tls_verify=%{ssl_verify_result}'
+                      ' dns=%{time_namelookup}s connect=%{time_connect}s tls=%{time_appconnect}s'
+                      ' first_byte=%{time_starttransfer}s total=%{time_total}s\n', url])
+              # CocoaPods uses Ruby's libcurl, which can differ from the curl executable.
+              probe(f'CDN GET with CocoaPods HTTP library: {url}', [
+                  'ruby', '-r', 'typhoeus', '-e', '''
+          response = Typhoeus.get(ARGV.fetch(0), connecttimeout: 8, timeout: 20, followlocation: true, maxredirs: 5)
+          puts "http=#{response.code} return_code=#{response.return_code} message=#{response.return_message}"
+          ''', url])
+          PY
+            exit "${POD_RESULTS[0]}"
+          fi
+          test "${POD_RESULTS[1]}" -eq 0
           git show HEAD:macos/Podfile.lock > "$RUNNER_TEMP/gleec-Podfile.lock"
           ruby -r cocoapods <<'RUBY'
           original = Pod::Lockfile.from_file(Pathname.new(ENV.fetch('RUNNER_TEMP')).join('gleec-Podfile.lock')).to_hash
